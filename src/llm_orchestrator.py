@@ -110,10 +110,6 @@ class LLMOrchestrator:
         
         return data
 
-    
-
-    
-
     def _ensure_log_directory_exists(self):
         """
         Ensures the 'logs' directory exists in the project root.
@@ -122,3 +118,24 @@ class LLMOrchestrator:
         if not os.path.exists(log_dir):
             os.makedirs(log_dir)
         self.log_dir = log_dir
+
+    
+
+    
+
+    def _clean_llm_response(self, response_text):
+        """
+        Attempts to clean the LLM response to isolate the JSON array.
+        This handles cases where the LLM adds conversational text around the JSON.
+        """
+        # Find the first occurrence of '[' and the last occurrence of ']'
+        first_bracket = response_text.find('[')
+        last_bracket = response_text.rfind(']')
+
+        if first_bracket != -1 and last_bracket != -1 and last_bracket > first_bracket:
+            # Extract the substring between and including the brackets
+            json_string = response_text[first_bracket : last_bracket + 1]
+            return json_string
+        else:
+            # If brackets are not found, return the original text (parsing will fail)
+            return response_text
