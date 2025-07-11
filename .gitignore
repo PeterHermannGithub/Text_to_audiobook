@@ -20,7 +20,6 @@ sdist/
 var/
 wheels/
 *.egg-info/
-.installed.cfg
 *.egg
 
 # Virtual environments
@@ -36,3 +35,13 @@ ENV/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Log and output files
+logs/
+input/
+output/
+*.log
+*.json
+
+# Archive directory
+archive/
