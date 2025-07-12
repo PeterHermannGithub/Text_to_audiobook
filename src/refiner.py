@@ -1,10 +1,10 @@
 import json
 import re
 from fuzzywuzzy import fuzz, process
+from config import settings
 
 # --- Constants ---
-MAX_REFINEMENT_ITERATIONS = 2
-REFINEMENT_QUALITY_THRESHOLD = 98.0 # Start refinement if score is below this
+MAX_REFINEMENT_ITERATIONS = settings.MAX_REFINEMENT_ITERATIONS
 CONTEXT_WINDOW_SIZE = 250 # Chars to include before/after a segment for context
 
 class OutputRefiner:
@@ -55,7 +55,7 @@ class OutputRefiner:
             processed_data, quality_report = self.validator.validate(processed_data, original_text, text_metadata)
             print(f"New Quality Score after refinement: {quality_report['quality_score']:.2f}% ({quality_report['error_count']} errors)")
 
-            if quality_report['quality_score'] >= REFINEMENT_QUALITY_THRESHOLD:
+            if quality_report['quality_score'] >= settings.REFINEMENT_QUALITY_THRESHOLD:
                 print("Quality threshold met. Exiting refinement loop.")
                 break
         

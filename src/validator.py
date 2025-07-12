@@ -1,12 +1,13 @@
 import json
 import re
 from fuzzywuzzy import fuzz, process
+from config import settings
 
 class OutputValidator:
     def __init__(self):
         pass
 
-    def validate(self, processed_data, original_text, text_metadata, similarity_threshold=95):
+    def validate(self, processed_data, original_text, text_metadata):
         print(f"DEBUG: Validator received processed_data (first 5 segments):\n{json.dumps(processed_data[:5], indent=2)}")
         print(f"DEBUG: Validator received original_text (first 500 chars):\n{original_text[:500]}...")
         """
@@ -24,9 +25,9 @@ class OutputValidator:
         
         content_similarity_score = fuzz.ratio(normalized_original, normalized_structured)
         
-        if content_similarity_score < similarity_threshold:
+        if content_similarity_score < settings.SIMILARITY_THRESHOLD:
             # This is a major error, so we won't assign it to a specific segment index
-            errors.append({"index": -1, "type": "content_preservation", "message": f"Content Preservation Alert: Text similarity is {content_similarity_score}%, which is below the {similarity_threshold}% threshold. The LLM may have omitted or hallucinated content."})
+            errors.append({"index": -1, "type": "content_preservation", "message": f"Content Preservation Alert: Text similarity is {content_similarity_score}%, which is below the {settings.SIMILARITY_THRESHOLD}% threshold. The LLM may have omitted or hallucinated content."})
 
         for i, (segment, chunk_idx) in enumerate(processed_data):
             text = segment['text']

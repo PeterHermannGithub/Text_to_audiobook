@@ -1,11 +1,12 @@
 import re
 from tqdm import tqdm
 from fuzzywuzzy import fuzz
+from config import settings
 
 class ChunkManager:
-    def __init__(self, chunk_size, overlap_size):
-        self.chunk_size = chunk_size
-        self.overlap_size = overlap_size
+    def __init__(self):
+        self.chunk_size = settings.CHUNK_SIZE
+        self.overlap_size = settings.OVERLAP_SIZE
 
     def create_chunks(self, text, scene_breaks=None):
         """

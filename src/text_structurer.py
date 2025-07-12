@@ -3,6 +3,7 @@ import time
 from tqdm import tqdm
 import spacy
 
+from config import settings
 
 from .preprocessor import TextPreprocessor
 from .chunking import ChunkManager
@@ -12,14 +13,12 @@ from .refiner import OutputRefiner
 from .speaker_attributor import SpeakerAttributor
 
 # --- Constants ---
-MAX_REFINEMENT_ITERATIONS = 2
-REFINEMENT_QUALITY_THRESHOLD = 98.0 # Start refinement if score is below this
+MAX_REFINEMENT_ITERATIONS = settings.MAX_REFINEMENT_ITERATIONS
 
 class TextStructurer:
     """Structures raw text into a dialogue-focused JSON format using an LLM."""
 
-    def __init__(self, engine='local', project_id=None, location=None, local_model='mistral',
-                 chunk_size=2500, overlap_size=500):
+    def __init__(self, engine=settings.DEFAULT_LLM_ENGINE, project_id=None, location=None, local_model=settings.DEFAULT_LOCAL_MODEL):
         """
         Initializes the TextStructurer.
 
@@ -28,18 +27,15 @@ class TextStructurer:
             project_id (str, optional): The Google Cloud project ID. Required for 'gcp' engine.
             location (str, optional): The Google Cloud location. Required for 'gcp' engine.
             local_model (str): The local model to use ('mistral' or 'llama3').
-            chunk_size (int): Target size of text chunks for LLM processing.
-                              Tune this based on the LLM's context window (e.g., 4000 tokens).
-            overlap_size (int): Size of overlap between consecutive chunks.
         """
         self.engine = engine
         self.local_model = local_model
-        self.chunk_size = chunk_size
-        self.overlap_size = overlap_size
+        self.chunk_size = settings.CHUNK_SIZE
+        self.overlap_size = settings.OVERLAP_SIZE
 
         # Initialize helper classes
         self.preprocessor = TextPreprocessor(self._load_spacy_model())
-        self.chunk_manager = ChunkManager(self.chunk_size, self.overlap_size)
+        self.chunk_manager = ChunkManager()
         self.llm_orchestrator = LLMOrchestrator({
             'engine': self.engine,
             'project_id': project_id,
@@ -53,13 +49,13 @@ class TextStructurer:
     def _load_spacy_model(self):
         nlp_model = None
         try:
-            nlp_model = spacy.load("en_core_web_sm")
-            print("spaCy model 'en_core_web_sm' loaded successfully.")
+            nlp_model = spacy.load(settings.SPACY_MODEL)
+            print(f"spaCy model '{settings.SPACY_MODEL}' loaded successfully.")
         except OSError:
             print("\n---")
-            print("Warning: spaCy model 'en_core_web_sm' not found.")
+            print(f"Warning: spaCy model '{settings.SPACY_MODEL}' not found.")
             print("Character name detection will be less accurate.")
-            print("For better results, run: python -m spacy download en_core_web_sm")
+            print(f"For better results, run: python -m spacy download {settings.SPACY_MODEL}")
             print("---\n")
         return nlp_model
 
@@ -85,6 +81,10 @@ class TextStructurer:
         # Initialize processed_data
         processed_data = []
 
+        # Initialize processed_data and chunks
+        processed_data = []
+        chunks = []
+
         if len(text_content) <= self.chunk_size:
             # Process as a single chunk if it fits
             prompt = self.llm_orchestrator.build_prompt(text_content)
@@ -93,6 +93,7 @@ class TextStructurer:
             structured_data_from_llm = self.speaker_attributor.attribute_speakers(paragraph_list)
             # Convert list[dict] to list[tuple(dict, int)] for consistency
             processed_data = [(s, 0) for s in structured_data_from_llm]
+            chunks = [text_content] # In single chunk case, the content itself is the raw chunk
         else:
             # --- Main Structuring Loop ---
             all_processed_segments = []
@@ -139,8 +140,8 @@ class TextStructurer:
         # --- End Post-processing ---
 
         # --- Iterative Refinement ---
-        if quality_report['quality_score'] < REFINEMENT_QUALITY_THRESHOLD:
-            print(f"\nInitial quality score is below {REFINEMENT_QUALITY_THRESHOLD}%. Starting iterative refinement...")
+        if quality_report['quality_score'] < settings.REFINEMENT_QUALITY_THRESHOLD:
+            print(f"\nInitial quality score is below {settings.REFINEMENT_QUALITY_THRESHOLD}%. Starting iterative refinement...")
             # Pass the raw chunks and metadata to the refinement process
             processed_data, quality_report = self.output_refiner.refine(processed_data, text_content, chunks, text_metadata)
         # --- End Refinement ---

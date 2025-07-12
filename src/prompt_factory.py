@@ -36,6 +36,20 @@ Now, split the following text. IMPORTANT: Only output the JSON array. Do not inc
 ---
 """
 
+    def create_json_correction_prompt(self, malformed_json_text):
+        """
+        Creates a prompt to instruct the LLM to correct malformed JSON output.
+        """
+        return f"""The previous response contained malformed JSON. Please correct it.
+
+Here is the malformed JSON:
+---
+{malformed_json_text}
+---
+
+Provide only the corrected JSON array of strings. Do not include any other text or explanations. Keep the response concise and complete, do NOT truncate the JSON.
+"""
+
     def _sanitize_text_for_llm(self, text):
         """
         Sanitizes text by replacing problematic Unicode characters and normalizing whitespace.

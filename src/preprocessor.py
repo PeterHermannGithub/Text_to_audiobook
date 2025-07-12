@@ -1,6 +1,7 @@
 import re
 import spacy
 from fuzzywuzzy import fuzz, process
+from config import settings
 
 class TextPreprocessor:
     def __init__(self, nlp_model):

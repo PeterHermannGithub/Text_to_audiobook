@@ -5,11 +5,12 @@ import requests
 from google.cloud import aiplatform
 import google.generativeai as genai
 from google.cloud import texttospeech
+from config import settings
 
 class VoiceCaster:
     """Suggests voice profiles for characters based on structured text."""
 
-    def __init__(self, engine='local', project_id=None, location=None, local_model='mistral'):
+    def __init__(self, engine=settings.DEFAULT_LLM_ENGINE, project_id=None, location=None, local_model=settings.DEFAULT_LOCAL_MODEL):
         self.engine = engine
         self.local_model = local_model
         self.project_id = project_id
@@ -19,9 +20,9 @@ class VoiceCaster:
             if not project_id or not location:
                 raise ValueError("Project ID and location are required for GCP engine.")
             aiplatform.init(project=project_id, location=location)
-            self.llm_model = genai.GenerativeModel('gemini-1.0-pro')
+            self.llm_model = genai.GenerativeModel(settings.GCP_LLM_MODEL)
         elif self.engine == 'local':
-            self.ollama_url = "http://localhost:11434/api/generate"
+            self.ollama_url = settings.OLLAMA_URL
         
         self.tts_client = texttospeech.TextToSpeechClient()
 

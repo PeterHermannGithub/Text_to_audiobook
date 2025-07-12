@@ -27,11 +27,11 @@ pip install -r requirements.txt
 
 ### 3. Basic Usage
 ```bash
-# Run with default local model (Mistral by default) for text structuring & character description
+# Run with default local model (defined in config/settings.py) for text structuring & character description
 # Requires Google Cloud Project ID for voice casting
 python app.py input/your_book.pdf --project_id "your-gcp-project-id"
 
-# Run with local LLM (Llama3) for text structuring & character description
+# Run with a different local model (e.g., llama3, if pulled) for text structuring & character description
 # Requires Google Cloud Project ID for voice casting
 python app.py input/your_book.docx --engine local --model llama3 --project_id "your-gcp-project-id"
 
@@ -43,7 +43,7 @@ python app.py input/your_book.epub --engine gcp --project_id "your-gcp-project-i
 ## ✨ **Key Features**
 
 - **📚 Multi-Format Text Extraction**: Supports `.txt`, `.md`, `.pdf`, `.docx`, `.epub`, `.mobi`.
-- **🗣️ AI-Powered Text Structuring**: Converts raw text into structured JSON, separating narration and dialogue, using either local (Mistral or Ollama) or Google Cloud (Gemini) LLMs.
+- **🗣️ AI-Powered Text Structuring**: Converts raw text into structured JSON, separating narration and dialogue, using either local (Mistral or Ollama) or Google Cloud (Gemini) LLMs, with speaker attribution, validation, and refinement.
 - **🎭 Character Voice Casting**: Identifies unique speakers and suggests suitable Google Cloud TTS voices.
 - **🎵 Audio Production Pipeline**: (Future) Professional audio concatenation with FFmpeg.
 - **⚙️ Modular Architecture**: Designed for easy extension and maintenance.
@@ -53,6 +53,7 @@ python app.py input/your_book.epub --engine gcp --project_id "your-gcp-project-i
 ```
 ├── venv/                     # Python Virtual Environment
 ├── config/                    # For user-editable configurations
+│   ├── settings.py            # Centralized application settings
 │   └── voice_profiles.json    # (Generated) Suggested voice mappings
 ├── input/                     # Place source documents here
 ├── output/                    # Generated files are stored here
@@ -60,10 +61,17 @@ python app.py input/your_book.epub --engine gcp --project_id "your-gcp-project-i
 │   └── temp/                  # (Future) For temporary audio segments
 ├── src/                       # Core application logic
 │   ├── text_extractor.py      # PHASE 1: Handles all file reading
-│   ├── text_structurer.py     # PHASE 2: Handles AI-based text analysis
-│   ├── voice_caster.py        # PHASE 3: Handles character voice suggestions
-│   ├── audio_generator.py     # (Future) For Phase 4 logic
-│   └── utils.py               # (Future) For shared helper functions
+│   ├── text_structurer.py     # PHASE 2: Orchestrates text structuring with LLM and deterministic parsing
+│   ├── llm_orchestrator.py    # Handles communication with LLM (local or GCP) and response validation
+│   ├── prompt_factory.py      # Generates prompts for the LLM
+│   ├── speaker_attributor.py  # Assigns speakers to text segments
+│   ├── voice_caster.py        # (Placeholder) For future Phase 3 logic
+│   ├── audio_generator.py     # (Placeholder) For future Phase 4 logic
+│   ├── preprocessor.py        # Pre-processes text for structural hints
+│   ├── chunking.py            # Manages text chunking for LLM processing
+│   ├── validator.py           # Validates the structured output
+│   ├── refiner.py             # Refines structured output based on validation errors
+│   └── utils.py               # (Placeholder) For shared helper functions
 ├── app.py                     # Main application entry point & CLI handler
 ├── requirements.txt           # Project dependencies
 ├── README.md                  # This file: Guide for human developers

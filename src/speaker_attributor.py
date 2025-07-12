@@ -1,5 +1,7 @@
 import re
+import spacy
 from fuzzywuzzy import fuzz, process
+from config import settings
 
 class SpeakerAttributor:
     def __init__(self, nlp_model, text_metadata):

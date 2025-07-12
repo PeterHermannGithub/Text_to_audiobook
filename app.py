@@ -4,16 +4,17 @@ import json
 from src.text_extractor import TextExtractor
 from src.text_structurer import TextStructurer
 # from src.voice_caster import VoiceCaster
+from config import settings
 
 def main():
     parser = argparse.ArgumentParser(description="Convert a document to an audiobook.")
     parser.add_argument("input_file", nargs='?', help="Path to the input file (.txt, .md, .pdf, .docx, .epub, .mobi). Required if --structured-input-file is not used.")
     parser.add_argument("--structured-input-file", help="Path to a pre-structured JSON file. If provided, skips text extraction and structuring.")
     parser.add_argument("--skip-voice-casting", action="store_true", help="If set, skips the voice casting phase.")
-    parser.add_argument("--engine", default="local", choices=["local", "gcp"], help="AI engine to use for text structuring and character description (LLM). Default is local.")
-    parser.add_argument("--model", default="mistral", choices=["mistral", "llama3"], help="Local model to use if --engine is 'local'.")
+    parser.add_argument("--engine", default=settings.DEFAULT_LLM_ENGINE, choices=["local", "gcp"], help="AI engine to use for text structuring and character description (LLM). Default is local.")
+    parser.add_argument("--model", default=settings.DEFAULT_LOCAL_MODEL, choices=["mistral", "llama3"], help="Local model to use if --engine is 'local'.")
     parser.add_argument("--project_id", help="Google Cloud project ID. Required if --engine is 'gcp' or if --skip-voice-casting is not set.")
-    parser.add_argument("--location", default="us-central1", help="Google Cloud location. Required if --engine is 'gcp' or if --skip-voice-casting is not set.")
+    parser.add_argument("--location", default=settings.GCP_LOCATION, help="Google Cloud location. Required if --engine is 'gcp' or if --skip-voice-casting is not set.")
     args = parser.parse_args()
 
     if not args.input_file and not args.structured_input_file:
@@ -63,7 +64,7 @@ def main():
             print(f"DEBUG: structured_text after structure_text call: type={type(structured_text)}, content_sample={structured_text[:5] if isinstance(structured_text, list) else structured_text}")
             
             output_filename_base = os.path.splitext(os.path.basename(input_path))[0]
-            structured_text_output_path = os.path.join("output", output_filename_base + "_structured.json")
+            structured_text_output_path = os.path.join(settings.OUTPUT_DIR, output_filename_base + "_structured.json")
             with open(structured_text_output_path, 'w', encoding='utf-8') as f:
                 json.dump(structured_text, f, indent=2)
             
@@ -84,7 +85,7 @@ def main():
             )
             voice_profiles = voice_caster.cast_voices(structured_text)
 
-            voice_profiles_output_path = os.path.join("config", output_filename_base + "_voice_profiles.json")
+            voice_profiles_output_path = os.path.join(settings.OUTPUT_DIR, output_filename_base + "_voice_profiles.json")
             with open(voice_profiles_output_path, 'w', encoding='utf-8') as f:
                 json.dump(voice_profiles, f, indent=2)
             
