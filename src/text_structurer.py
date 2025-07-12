@@ -1,4 +1,6 @@
 import time
+import logging
+import os
 from tqdm import tqdm
 import spacy
 
@@ -6,7 +8,11 @@ from config import settings
 from .llm_orchestrator import LLMOrchestrator
 from .chunking import ChunkManager
 from .preprocessor import TextPreprocessor
-from .speaker_attributor import SpeakerAttributor
+from .simplified_validator import SimplifiedValidator
+from .refiner import OutputRefiner
+from .contextual_refiner import ContextualRefiner
+from .deterministic_segmenter import DeterministicSegmenter
+from .rule_based_attributor import RuleBasedAttributor
 
 class TextStructurer:
     """Structures raw text into a dialogue-focused JSON format using an LLM."""
@@ -14,15 +20,47 @@ class TextStructurer:
     def __init__(self, engine=settings.DEFAULT_LLM_ENGINE, project_id=None, location=None, local_model=settings.DEFAULT_LOCAL_MODEL):
         self.engine = engine
         self.local_model = local_model
-        self.llm_orchestrator = LLMOrchestrator({
-            'engine': self.engine,
-            'project_id': project_id,
-            'location': location,
-            'local_model': local_model
-        })
-        self.chunk_manager = ChunkManager()
-        self.preprocessor = TextPreprocessor(self._load_spacy_model())
-        self.speaker_attributor = SpeakerAttributor(self._load_spacy_model()) # Initialize SpeakerAttributor
+        
+        # Setup logging
+        self._setup_logging()
+        self.logger = logging.getLogger(__name__)
+        
+        self.logger.info(f"Initializing TextStructurer with engine: {engine}, model: {local_model}")
+        
+        try:
+            self.llm_orchestrator = LLMOrchestrator({
+                'engine': self.engine,
+                'project_id': project_id,
+                'location': location,
+                'local_model': local_model
+            })
+            self.chunk_manager = ChunkManager()
+            self.preprocessor = TextPreprocessor(self._load_spacy_model())
+            self.deterministic_segmenter = DeterministicSegmenter()
+            self.rule_based_attributor = RuleBasedAttributor()
+            self.validator = SimplifiedValidator()  # Use new simplified validator
+            self.refiner = OutputRefiner(self.llm_orchestrator, self.validator)
+            self.contextual_refiner = ContextualRefiner(self.llm_orchestrator)
+            self.logger.info("TextStructurer initialization completed successfully")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize TextStructurer: {e}", exc_info=True)
+            raise
+
+    def _setup_logging(self):
+        """Setup comprehensive logging for the text structurer."""
+        # Create logs directory if it doesn't exist
+        log_dir = os.path.join(os.getcwd(), settings.LOG_DIR)
+        os.makedirs(log_dir, exist_ok=True)
+        
+        # Configure logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.FileHandler(os.path.join(log_dir, 'text_structurer.log')),
+                logging.StreamHandler()  # Also log to console
+            ]
+        )
 
     def _load_spacy_model(self):
         nlp_model = None
@@ -39,31 +77,180 @@ class TextStructurer:
 
     def structure_text(self, text_content):
         """
-        Uses the selected AI engine to structure the text.
+        Uses the selected AI engine to structure the text with comprehensive error handling.
         """
         start_time = time.time()
+        self.logger.info(f"Starting text structuring with {self.engine} engine ({self.local_model if self.engine == 'local' else 'gemini-1.0-pro'})")
         print(f"\nUsing {self.engine} engine ({self.local_model if self.engine == 'local' else 'gemini-1.0-pro'})...")
 
-        # Pre-process text for structural hints
-        text_metadata = self.preprocessor.analyze(text_content)
+        try:
+            # Pre-process text for structural hints
+            self.logger.info("Starting text preprocessing...")
+            text_metadata = self.preprocessor.analyze(text_content)
+            self.logger.info(f"Preprocessing completed. Found {len(text_metadata.get('potential_character_names', set()))} potential characters")
 
-        # Create chunks
-        chunks = self.chunk_manager.create_chunks(text_content, text_metadata['scene_breaks'])
+            # Create chunks
+            self.logger.info("Creating text chunks...")
+            chunks = self.chunk_manager.create_chunks(text_content, text_metadata['scene_breaks'])
+            self.logger.info(f"Created {len(chunks)} chunks for processing")
+            
+            all_structured_segments = []
+            processed_data_with_chunks = []
+            failed_chunks = []
+            
+            for i, chunk in enumerate(tqdm(chunks, desc="Processing chunks")):
+                try:
+                    self.logger.debug(f"Processing chunk {i+1}/{len(chunks)}")
+                    
+                    # Phase 2: Deterministic segmentation first
+                    numbered_lines = self.deterministic_segmenter.segment_text(chunk, text_metadata)
+                    
+                    if not numbered_lines:
+                        self.logger.warning(f"Empty segmentation for chunk {i+1}, using fallback")
+                        # Fallback: simple sentence splitting converted to numbered lines
+                        fallback_segments = self._fallback_text_splitting(chunk)
+                        numbered_lines = [{"line_id": i+1, "text": seg} for i, seg in enumerate(fallback_segments)]
+                    
+                    # Phase 2.5: Rule-based attribution first pass
+                    attributed_lines = self.rule_based_attributor.process_lines(numbered_lines, text_metadata)
+                    
+                    # Separate lines that need AI processing from those already attributed
+                    pending_ai_lines = self.rule_based_attributor.get_pending_lines(attributed_lines)
+                    rule_attributed_lines = self.rule_based_attributor.get_attributed_lines(attributed_lines)
+                    
+                    self.logger.debug(f"Chunk {i+1}: {len(rule_attributed_lines)} rule-attributed, {len(pending_ai_lines)} need AI")
+                    
+                    # Phase 3: LLM processing for remaining lines (speaker classification only)
+                    if pending_ai_lines:
+                        # Extract just the text content for LLM classification
+                        text_lines = [line['text'] for line in pending_ai_lines]
+                        
+                        # NEW APPROACH: Use speaker classification instead of text segmentation
+                        speaker_classifications = self.llm_orchestrator.get_speaker_classifications(text_lines, text_metadata)
+                        
+                        if not speaker_classifications or len(speaker_classifications) != len(text_lines):
+                            self.logger.warning(f"LLM classification failed for chunk {i+1}, using fallback")
+                            speaker_classifications = ["AMBIGUOUS"] * len(text_lines)
+                        
+                        # Combine text lines with AI-classified speakers
+                        ai_structured_data = []
+                        for text_line, speaker in zip(text_lines, speaker_classifications):
+                            ai_structured_data.append({"speaker": speaker, "text": text_line})
+                    else:
+                        ai_structured_data = []
+                    
+                    # Combine rule-based and AI attributions
+                    rule_structured_data = [{"speaker": line['speaker'], "text": line['text']} for line in rule_attributed_lines]
+                    structured_data_for_chunk = rule_structured_data + ai_structured_data
+                    
+                    # Add chunk index information for validation
+                    for segment in structured_data_for_chunk:
+                        processed_data_with_chunks.append((segment, i))
+                    
+                    all_structured_segments = self.chunk_manager.merge(
+                        all_structured_segments, structured_data_for_chunk
+                    )
+                    
+                except Exception as chunk_error:
+                    self.logger.error(f"Failed to process chunk {i+1}: {chunk_error}", exc_info=True)
+                    failed_chunks.append(i)
+                    
+                    # Attempt fallback processing
+                    try:
+                        self.logger.info(f"Attempting fallback processing for chunk {i+1}")
+                        fallback_segments = self._fallback_chunk_processing(chunk, text_metadata)
+                        for segment in fallback_segments:
+                            processed_data_with_chunks.append((segment, i))
+                        all_structured_segments.extend(fallback_segments)
+                    except Exception as fallback_error:
+                        self.logger.error(f"Fallback processing also failed for chunk {i+1}: {fallback_error}")
+                        continue
+
+            if failed_chunks:
+                self.logger.warning(f"Failed to process {len(failed_chunks)} chunks: {failed_chunks}")
+                
+        except Exception as preprocessing_error:
+            self.logger.error(f"Critical error in preprocessing stage: {preprocessing_error}", exc_info=True)
+            raise
+
+        print(f"Initial processing completed. Running validation and refinement...")
         
-        all_structured_segments = []
-        for i, chunk in enumerate(tqdm(chunks, desc="Processing chunks")):
-            # LLM now only splits into paragraphs (strings)
-            prompt = self.llm_orchestrator.build_prompt(chunk)
-            paragraph_list = self.llm_orchestrator.get_structured_response(prompt) # This now returns list of strings
+        # Run validation and contextual refinement on the complete dataset
+        try:
+            validated_data, quality_report = self.validator.validate(processed_data_with_chunks, text_content, text_metadata)
+            print(f"Initial quality score: {quality_report['quality_score']:.2f}% ({quality_report['error_count']} errors)")
             
-            # SpeakerAttributor assigns speakers to the paragraphs
-            structured_data_for_chunk = self.speaker_attributor.attribute_speakers(paragraph_list, text_metadata)
+            # Extract segments for contextual refinement (remove chunk indices temporarily)
+            segments_only = [segment for segment, chunk_idx in validated_data]
             
-            all_structured_segments = self.chunk_manager.merge(
-                all_structured_segments, structured_data_for_chunk
-            )
+            # Run contextual refinement on AMBIGUOUS speakers
+            print("Running contextual refinement for AMBIGUOUS speakers...")
+            contextually_refined_segments = self.contextual_refiner.refine_ambiguous_speakers(segments_only, text_metadata)
+            
+            # Count refinements made
+            ambiguous_before = sum(1 for seg in segments_only if seg.get('speaker') == 'AMBIGUOUS')
+            ambiguous_after = sum(1 for seg in contextually_refined_segments if seg.get('speaker') == 'AMBIGUOUS')
+            refined_count = ambiguous_before - ambiguous_after
+            
+            if refined_count > 0:
+                print(f"Contextual refinement resolved {refined_count} AMBIGUOUS speakers")
+            
+            # Re-add chunk indices for compatibility with old validator
+            contextually_refined_data = [(seg, validated_data[i][1]) for i, seg in enumerate(contextually_refined_segments)]
+            
+            # Run traditional refinement if quality is still below threshold
+            if quality_report['quality_score'] < settings.REFINEMENT_QUALITY_THRESHOLD:
+                print("Running additional traditional refinement...")
+                refined_data, final_quality_report = self.refiner.refine(contextually_refined_data, text_content, chunks, text_metadata)
+                print(f"Final quality score: {final_quality_report['quality_score']:.2f}% ({final_quality_report['error_count']} errors)")
+                # Extract just the segments without chunk indices for return
+                final_segments = [segment for segment, chunk_idx in refined_data]
+            else:
+                print("Quality acceptable after contextual refinement.")
+                # Extract just the segments without chunk indices for return
+                final_segments = [segment for segment, chunk_idx in contextually_refined_data]
+                
+        except Exception as e:
+            print(f"Warning: Validation/refinement failed: {e}")
+            print("Returning unvalidated results...")
+            final_segments = all_structured_segments
 
         end_time = time.time()
         print(f"Text structuring completed in {end_time - start_time:.2f} seconds.")
 
-        return all_structured_segments
+        return final_segments
+
+    def _fallback_text_splitting(self, text):
+        """Fallback method for splitting text when LLM fails."""
+        self.logger.info("Using fallback text splitting method")
+        import re
+        
+        # Split on paragraph breaks, then sentences
+        paragraphs = re.split(r'\n\s*\n', text.strip())
+        if not paragraphs or len(paragraphs) == 1:
+            # If no paragraph breaks, split on sentences
+            sentences = re.split(r'[.!?]+\s+', text.strip())
+            return [s.strip() for s in sentences if s.strip()]
+        
+        return [p.strip() for p in paragraphs if p.strip()]
+
+    def _fallback_chunk_processing(self, chunk, text_metadata):
+        """Complete fallback processing for a chunk when all else fails."""
+        self.logger.info("Using complete fallback processing")
+        
+        # Simple text splitting
+        paragraphs = self._fallback_text_splitting(chunk)
+        
+        # Basic speaker attribution without LLM
+        segments = []
+        for paragraph in paragraphs:
+            speaker = "narrator"  # Default to narrator
+            text = paragraph.strip()
+            
+            # Very basic dialogue detection
+            if '"' in text or '"' in text or '"' in text:
+                speaker = "AMBIGUOUS"
+            
+            segments.append({"speaker": speaker, "text": text})
+        
+        return segments

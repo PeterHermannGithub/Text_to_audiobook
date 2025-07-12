@@ -38,7 +38,7 @@ class OutputRefiner:
                     refinement_prompt = self._build_refinement_prompt(previous_segments_for_context, segment['text'], known_characters)
 
                     # Get the corrected speaker from the LLM
-                    response_text = self.orchestrator.get_response(refinement_prompt)
+                    response_text = self.orchestrator._get_llm_response(refinement_prompt)
                     corrected_speaker = response_text.strip()
 
                     if corrected_speaker and corrected_speaker != "AMBIGUOUS":
