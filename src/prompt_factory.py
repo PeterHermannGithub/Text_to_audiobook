@@ -12,43 +12,87 @@ class PromptFactory:
 
     def create_structuring_prompt(self, text_content, context_hint="", text_metadata=None):
         """
-        Builds a highly constrained, robust prompt for the generative AI model
-        to structure raw text into a dialogue-focused JSON format.
+        Builds a sophisticated prompt for the LLM to structure raw text into a
+        JSON array of strings, each representing a distinct paragraph.
         """
-        # 1. SANITIZE FIRST: Call the sanitization method on the input text.
-        #    This logic must happen BEFORE the final prompt is constructed.
         sanitized_text_content = self._sanitize_text_for_llm(text_content)
 
-        # 2. CONSTRUCT AND RETURN THE FINAL PROMPT:
         return f"""Split the following text into a JSON array of strings. Each string in the array must be a distinct paragraph.
 
-Example Input:
-Paragraph one.
+        RULES:
+        1.  The output MUST be a valid, complete JSON array. Do not truncate it.
+        2.  Your response MUST contain ONLY the JSON array. Do NOT include any other text or explanations.
 
-Paragraph two.
+        EXAMPLE INPUT:
+        Paragraph one.
 
-Example Output:
-["Paragraph one.", "Paragraph two."]
+        Paragraph two.
 
-Now, split the following text. IMPORTANT: Only output the JSON array. Do not include any other text or explanations. Keep the response concise and complete, do NOT truncate the JSON.
----
+        EXAMPLE OUTPUT:
+        ["Paragraph one.", "Paragraph two."]
+
+        Now, split the following text:
+        ---
 {sanitized_text_content}
 ---
-"""
+        """
 
     def create_json_correction_prompt(self, malformed_json_text):
         """
         Creates a prompt to instruct the LLM to correct malformed JSON output.
         """
-        return f"""The previous response contained malformed JSON. Please correct it.
+        return f"""The previous response was malformed JSON. You MUST correct it and provide a valid JSON array of strings.
 
-Here is the malformed JSON:
+Here is the malformed JSON that needs correction:
 ---
 {malformed_json_text}
 ---
 
-Provide only the corrected JSON array of strings. Do not include any other text or explanations. Keep the response concise and complete, do NOT truncate the JSON.
+Your response MUST be ONLY the corrected JSON array of strings. Do NOT include any other text, explanations, or conversational filler. The JSON must be perfectly valid and complete, do NOT truncate it.
 """
+
+    def create_character_description_prompt(self, character_name, dialogue_sample):
+        """
+        Creates a prompt to instruct the LLM to describe a character for voice casting.
+        """
+        return f"""Based on the following dialogue from '{character_name}', provide a concise, one-sentence description of their likely voice characteristics. 
+        Focus on age, gender, and tone.
+
+        Example: 'An elderly male with a deep, commanding voice.'
+        Example: 'A young female with a bright, energetic voice.'
+
+        Dialogue sample:
+        ---
+        {dialogue_sample}
+        ---
+        """
+
+    def create_emotion_annotation_prompt(self, sentence):
+        """
+        Creates a prompt to instruct the LLM to annotate a sentence with emotions.
+        """
+        return f"""Analyze the following sentence and return a JSON object with three keys: "emotion", "pitch", and "speaking_rate".
+
+        RULES:
+        1.  "emotion" should be a single descriptive word (e.g., "happy", "sad", "angry", "calm").
+        2.  "pitch" should be a float between -20.0 and 20.0.
+        3.  "speaking_rate" should be a float between 0.25 and 4.0.
+
+        EXAMPLE INPUT:
+        "I'm so excited to go to the park!"
+
+        EXAMPLE OUTPUT:
+        {{
+            "emotion": "excited",
+            "pitch": 5.0,
+            "speaking_rate": 1.2
+        }}
+
+        Now, process the following sentence:
+        ---
+        {sentence}
+        ---
+        """
 
     def _sanitize_text_for_llm(self, text):
         """
