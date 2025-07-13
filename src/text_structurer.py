@@ -53,8 +53,9 @@ class TextStructurer:
         os.makedirs(log_dir, exist_ok=True)
         
         # Configure logging
+        log_level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
         logging.basicConfig(
-            level=logging.INFO,
+            level=log_level,
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
             handlers=[
                 logging.FileHandler(os.path.join(log_dir, 'text_structurer.log')),

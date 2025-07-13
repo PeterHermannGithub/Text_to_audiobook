@@ -159,11 +159,17 @@ class LLMOrchestrator:
                 self.logger.warning(f"Expected array, got {type(speakers)}")
                 return None
                 
-            # Validate all items are strings
+            # Validate all items are strings and filter metadata speakers
             string_speakers = []
             for item in speakers:
                 if isinstance(item, str):
-                    string_speakers.append(item.strip())
+                    cleaned_speaker = item.strip()
+                    # Validate speaker is not metadata
+                    if self._is_metadata_speaker(cleaned_speaker):
+                        self.logger.debug(f"Filtered metadata speaker: {cleaned_speaker}")
+                        string_speakers.append("narrator")  # Convert to appropriate fallback
+                    else:
+                        string_speakers.append(cleaned_speaker)
                 else:
                     self.logger.warning(f"Non-string speaker found: {item}")
                     string_speakers.append("AMBIGUOUS")
@@ -213,6 +219,53 @@ class LLMOrchestrator:
                 
         self.logger.info(f"Applied fallback classification to {len(fallback_speakers)} lines")
         return fallback_speakers
+    
+    def _is_metadata_speaker(self, speaker_name: str) -> bool:
+        """
+        Check if a speaker name is likely metadata rather than an actual character.
+        
+        Returns True if the speaker should be filtered out as metadata.
+        """
+        if not speaker_name:
+            return True
+            
+        speaker_lower = speaker_name.lower().strip()
+        
+        # Known metadata speakers to filter out
+        metadata_speakers = {
+            'chapter', 'prologue', 'epilogue', 'author', 'writer', 'reader',
+            'part', 'section', 'book', 'volume', 'page', 'it', 'this', 'that',
+            'unfixable', 'ambiguous', 'unknown'
+        }
+        
+        if speaker_lower in metadata_speakers:
+            return True
+            
+        # Metadata patterns
+        metadata_patterns = [
+            r'^chapter\s+\d+', r'^chapter\s+[ivx]+', r'^ch\.\s*\d+',
+            r'^epilogue', r'^prologue', r'^part\s+\d+', r'^book\s+\d+',
+            r'^volume\s+\d+', r'^section\s+\d+', r'^author:', r'^writer:',
+            r'^\d+\.\s*$', r'^[ivx]+\.\s*$'
+        ]
+        
+        for pattern in metadata_patterns:
+            if re.match(pattern, speaker_lower):
+                return True
+        
+        # Check for chapter-like patterns with numbers
+        if re.match(r'^chapter\s+\w+', speaker_lower):
+            return True
+            
+        # Check for single letters or very short names that are likely artifacts
+        if len(speaker_name.strip()) <= 2 and speaker_name.strip().upper() in ['I', 'II', 'III', 'IV', 'V', 'A', 'B']:
+            return True
+            
+        # Check for numeric patterns
+        if re.match(r'^\d+\.?\s*$', speaker_name.strip()):
+            return True
+            
+        return False
 
     def _get_llm_response(self, prompt):
         if self.engine == 'gcp':

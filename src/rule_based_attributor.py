@@ -47,6 +47,21 @@ class RuleBasedAttributor:
             # speaker said/asked, "dialogue"
             r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\s+(' + '|'.join(self.dialogue_tags) + r'),\s*"([^"]*)"',
         ]
+        
+        # Metadata speakers to filter out (should never be actual character speakers)
+        self.metadata_speakers = {
+            'chapter', 'prologue', 'epilogue', 'author', 'writer', 'reader', 'narrator',
+            'part', 'section', 'book', 'volume', 'page', 'it', 'this', 'that',
+            'unfixable', 'ambiguous', 'unknown'
+        }
+        
+        # Chapter/title patterns to detect and filter
+        self.metadata_patterns = [
+            r'^chapter\s+\d+', r'^chapter\s+[ivx]+', r'^ch\.\s*\d+',
+            r'^epilogue', r'^prologue', r'^part\s+\d+', r'^book\s+\d+',
+            r'^volume\s+\d+', r'^section\s+\d+', r'^author:', r'^writer:',
+            r'^\d+\.\s*$', r'^[ivx]+\.\s*$'
+        ]
     
     def process_lines(self, numbered_lines: List[Dict[str, Any]], text_metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
@@ -162,6 +177,10 @@ class RuleBasedAttributor:
                     if best_match and best_match[1] > 85:
                         return best_match[0], 0.85
                 
+                # Check if it's a metadata speaker (should be filtered out)
+                if self._is_metadata_speaker(potential_speaker):
+                    return None, 0.0
+                    
                 # If it looks like a proper name, accept it even if not in known list
                 if self._is_likely_character_name(potential_speaker):
                     return potential_speaker, 0.7
@@ -183,6 +202,10 @@ class RuleBasedAttributor:
                         break
                 
                 if speaker_name:
+                    # Check if it's a metadata speaker (should be filtered out)
+                    if self._is_metadata_speaker(speaker_name):
+                        continue
+                        
                     # Check against known characters
                     if speaker_name in known_character_names:
                         return speaker_name, 0.9
@@ -234,6 +257,10 @@ class RuleBasedAttributor:
         if not name[0].isupper():
             return False
             
+        # Check if it's a metadata speaker first
+        if self._is_metadata_speaker(name):
+            return False
+            
         # Check for common non-name words
         non_names = {
             'the', 'and', 'but', 'for', 'with', 'from', 'into', 'then', 
@@ -259,6 +286,40 @@ class RuleBasedAttributor:
                 return False
                 
         return True
+    
+    def _is_metadata_speaker(self, speaker_name: str) -> bool:
+        """
+        Check if a speaker name is likely metadata rather than an actual character.
+        
+        Returns True if the speaker should be filtered out as metadata.
+        """
+        if not speaker_name:
+            return True
+            
+        speaker_lower = speaker_name.lower().strip()
+        
+        # Check against known metadata speakers
+        if speaker_lower in self.metadata_speakers:
+            return True
+            
+        # Check against metadata patterns
+        for pattern in self.metadata_patterns:
+            if re.match(pattern, speaker_lower):
+                return True
+        
+        # Check for chapter-like patterns with numbers
+        if re.match(r'^chapter\s+\w+', speaker_lower):
+            return True
+            
+        # Check for single letters or very short names that are likely artifacts
+        if len(speaker_name.strip()) <= 2 and speaker_name.strip().upper() in ['I', 'II', 'III', 'IV', 'V', 'A', 'B']:
+            return True
+            
+        # Check for numeric patterns
+        if re.match(r'^\d+\.?\s*$', speaker_name.strip()):
+            return True
+            
+        return False
     
     def get_pending_lines(self, attributed_lines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Extract lines that require AI processing."""

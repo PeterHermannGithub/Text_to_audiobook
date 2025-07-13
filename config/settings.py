@@ -27,3 +27,6 @@ MAX_REFINEMENT_ITERATIONS = 2
 
 # Other settings
 SPACY_MODEL = "en_core_web_sm"
+
+# Logging Configuration
+LOG_LEVEL = "DEBUG"

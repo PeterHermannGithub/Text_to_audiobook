@@ -13,6 +13,19 @@ class DeterministicSegmenter:
     
     def __init__(self):
         self.logger = logging.getLogger(__name__)
+        
+        # Metadata patterns to filter out at segmentation level
+        self.metadata_patterns = [
+            r'^chapter\s+\d+', r'^chapter\s+[ivx]+', r'^ch\.\s*\d+',
+            r'^epilogue', r'^prologue', r'^part\s+\d+', r'^book\s+\d+',
+            r'^volume\s+\d+', r'^section\s+\d+', r'^author:', r'^writer:',
+            r'^\d+\.\s*$', r'^[ivx]+\.\s*$'
+        ]
+        
+        # Content quality thresholds
+        self.min_segment_length = 10  # Minimum meaningful segment length
+        self.max_segment_length = 400  # Split large segments more aggressively
+        self.dialogue_split_threshold = 200  # Split mixed dialogue/narrative aggressively
     
     def segment_text(self, text_content: str, text_metadata: Dict[str, Any] = None) -> List[Dict[str, Any]]:
         """
@@ -42,10 +55,30 @@ class DeterministicSegmenter:
         else:
             segments = self._segment_narrative_format(text_content)
         
+        # Filter and process segments
+        filtered_segments = []
+        for segment in segments:
+            segment = segment.strip()
+            if not segment:
+                continue
+                
+            # Filter out metadata segments
+            if self._is_metadata_segment(segment):
+                self.logger.debug(f"Filtered out metadata segment: {repr(segment[:100])}")
+                continue
+                
+            # Split overly large segments or mixed content
+            if (len(segment) > self.max_segment_length or 
+                self._contains_mixed_content(segment)):
+                sub_segments = self._split_large_segment(segment)
+                filtered_segments.extend(sub_segments)
+            else:
+                filtered_segments.append(segment)
+        
         # Convert to numbered line objects
         numbered_lines = []
-        for i, segment in enumerate(segments):
-            if segment.strip():  # Only include non-empty segments
+        for i, segment in enumerate(filtered_segments):
+            if len(segment.strip()) >= self.min_segment_length:
                 numbered_lines.append({
                     'line_id': i + 1,
                     'text': segment.strip()
@@ -275,3 +308,144 @@ class DeterministicSegmenter:
             sentences.append(current_sentence.strip())
             
         return sentences
+    
+    def _is_metadata_segment(self, segment: str) -> bool:
+        """
+        Check if a segment is likely metadata that should be filtered out.
+        
+        Returns True if the segment should be excluded from processing.
+        """
+        if not segment or len(segment.strip()) < 3:
+            return True
+            
+        segment_lower = segment.strip().lower()
+        
+        # Check against metadata patterns
+        for pattern in self.metadata_patterns:
+            if re.match(pattern, segment_lower):
+                return True
+        
+        # Check for chapter-like patterns
+        if re.match(r'^chapter\s+', segment_lower):
+            return True
+            
+        # Check if it's just a chapter title or header
+        if (len(segment) < 100 and 
+            ('chapter' in segment_lower or 
+             'epilogue' in segment_lower or 
+             'prologue' in segment_lower or
+             re.match(r'^\d+\.\s', segment) or
+             segment.count(':') == 1 and segment.endswith(':'))):
+            return True
+            
+        # Check for author/metadata lines
+        if (segment_lower.startswith('author:') or 
+            segment_lower.startswith('writer:') or
+            segment_lower.startswith('–author:') or
+            segment_lower == 'author' or
+            segment_lower == 'writer'):
+            return True
+            
+        return False
+    
+    def _split_large_segment(self, segment: str) -> List[str]:
+        """
+        Split overly large segments into smaller, more manageable pieces.
+        
+        Preserves dialogue boundaries and natural breaks.
+        """
+        if len(segment) <= self.max_segment_length:
+            return [segment]
+            
+        self.logger.debug(f"Splitting large segment of {len(segment)} characters")
+        
+        # Try to split by sentence boundaries first
+        sentences = self._split_sentences_preserve_dialogue(segment)
+        
+        sub_segments = []
+        current_sub_segment = ""
+        
+        for sentence in sentences:
+            # If adding this sentence would exceed max length, start new segment
+            if (current_sub_segment and 
+                len(current_sub_segment) + len(sentence) > self.max_segment_length):
+                sub_segments.append(current_sub_segment.strip())
+                current_sub_segment = sentence
+            else:
+                if current_sub_segment:
+                    current_sub_segment += " " + sentence
+                else:
+                    current_sub_segment = sentence
+        
+        # Add any remaining content
+        if current_sub_segment.strip():
+            sub_segments.append(current_sub_segment.strip())
+        
+        # If we still have segments that are too large, split by paragraph
+        final_segments = []
+        for sub_segment in sub_segments:
+            if len(sub_segment) > self.max_segment_length:
+                # Split by paragraphs
+                paragraphs = re.split(r'\n\s*\n', sub_segment)
+                for para in paragraphs:
+                    if para.strip():
+                        final_segments.append(para.strip())
+            else:
+                final_segments.append(sub_segment)
+        
+        self.logger.debug(f"Split into {len(final_segments)} smaller segments")
+        return final_segments
+    
+    def _contains_mixed_content(self, segment: str) -> bool:
+        """
+        Check if a segment contains mixed dialogue and narrative content.
+        
+        Returns True if the segment should be split due to mixed content types.
+        """
+        if len(segment) < self.dialogue_split_threshold:
+            return False
+            
+        # Count dialogue vs narrative content
+        dialogue_chars = 0
+        narrative_chars = 0
+        
+        # Split into sentences for analysis
+        sentences = self._split_sentences_preserve_dialogue(segment)
+        
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+                
+            # Check if sentence contains dialogue markers
+            has_dialogue = any(marker in sentence for marker in ['"', '"', '"', "'", '—', '–'])
+            
+            if has_dialogue:
+                dialogue_chars += len(sentence)
+            else:
+                narrative_chars += len(sentence)
+        
+        total_chars = dialogue_chars + narrative_chars
+        if total_chars == 0:
+            return False
+            
+        # Calculate content ratios
+        dialogue_ratio = dialogue_chars / total_chars
+        narrative_ratio = narrative_chars / total_chars
+        
+        # Mixed content criteria:
+        # 1. Both dialogue and narrative present (each >20% of content)
+        # 2. Segment is longer than dialogue split threshold
+        # 3. Content is reasonably balanced (neither dominates completely)
+        
+        has_mixed_content = (
+            dialogue_ratio > 0.2 and 
+            narrative_ratio > 0.2 and 
+            len(segment) > self.dialogue_split_threshold and
+            min(dialogue_ratio, narrative_ratio) > 0.15  # Neither type dominates completely
+        )
+        
+        if has_mixed_content:
+            self.logger.debug(f"Mixed content detected: {dialogue_ratio:.2f} dialogue, {narrative_ratio:.2f} narrative, {len(segment)} chars")
+        
+        return has_mixed_content
