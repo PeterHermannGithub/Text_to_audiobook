@@ -1,10 +1,10 @@
 import argparse
 import os
 import json
-from src.text_extractor import TextExtractor
+from src.text_processing.text_extractor import TextExtractor
 from src.text_structurer import TextStructurer
-from src.voice_caster import VoiceCaster
-from src.audio_generator import AudioGenerator
+from src.output.voice_caster import VoiceCaster
+from src.output.audio_generator import AudioGenerator
 from src.emotion_annotator import EmotionAnnotator
 from config import settings
 

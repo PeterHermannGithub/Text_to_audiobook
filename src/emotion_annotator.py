@@ -1,6 +1,6 @@
 import json
 from tqdm import tqdm
-from .llm_orchestrator import LLMOrchestrator
+from .attribution.llm.orchestrator import LLMOrchestrator
 
 class EmotionAnnotator:
     """Annotates structured text with emotional information using an LLM."""

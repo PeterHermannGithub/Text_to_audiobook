@@ -5,16 +5,16 @@ from tqdm import tqdm
 import spacy
 
 from config import settings
-from .llm_orchestrator import LLMOrchestrator
-from .chunking import ChunkManager
-from .preprocessor import TextPreprocessor
-from .simplified_validator import SimplifiedValidator
-from .refiner import OutputRefiner
-from .contextual_refiner import ContextualRefiner
-from .deterministic_segmenter import DeterministicSegmenter
-from .rule_based_attributor import RuleBasedAttributor
-from .unfixable_recovery import UnfixableRecoverySystem
-from .output_formatter import OutputFormatter
+from .attribution.llm.orchestrator import LLMOrchestrator
+from .text_processing.segmentation.chunking import ChunkManager
+from .text_processing.preprocessor import TextPreprocessor
+from .validation.validator import SimplifiedValidator
+from .refinement.refiner import OutputRefiner
+from .refinement.contextual_refiner import ContextualRefiner
+from .text_processing.segmentation.deterministic_segmenter import DeterministicSegmenter
+from .attribution.rule_based_attributor import RuleBasedAttributor
+from .attribution.unfixable_recovery import UnfixableRecoverySystem
+from .output.output_formatter import OutputFormatter
 
 class TextStructurer:
     """Structures raw text into a dialogue-focused JSON format using an LLM."""
