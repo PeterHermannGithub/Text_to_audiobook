@@ -62,8 +62,11 @@ class OutputRefiner:
         # Final cleanup: Convert any remaining error flags to confidence flags
         for segment_tuple in processed_data:
             segment = segment_tuple[0]
-            if 'errors' in segment:
+            if 'errors' in segment and segment['errors']:  # ROBUSTNESS FIX: Check if errors list is not empty
                 self._mark_segment_as_unfixable(segment, segment['errors'][0])
+            elif 'errors' in segment:  # Handle empty errors list
+                # If errors key exists but list is empty, remove it
+                del segment['errors']
 
         return processed_data, quality_report
 

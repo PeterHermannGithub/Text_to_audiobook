@@ -59,8 +59,13 @@ class ContextualRefiner:
         unfixable_count = len(refinement_indices) - ambiguous_count
         self.logger.info(f"Found {ambiguous_count} AMBIGUOUS and {unfixable_count} problematic segments to refine")
         
+        # ENHANCEMENT: Pre-process segments for duplicate detection and merging
+        refined_segments = self._preprocess_segments_for_duplicates(structured_segments.copy())
+        
+        # Update refinement indices after potential segment merging
+        refinement_indices = self._update_refinement_indices_after_preprocessing(refined_segments)
+        
         # Process each problematic segment
-        refined_segments = structured_segments.copy()
         successful_refinements = 0
         
         for segment_idx in refinement_indices:
@@ -147,7 +152,7 @@ class ContextualRefiner:
     
     def _get_contextual_speaker_prediction(self, context: Dict[str, Any], target_text: str, text_metadata: Dict[str, Any]) -> Optional[str]:
         """
-        Get speaker prediction using contextual memory and conversation flow.
+        ENHANCED: Get speaker prediction using contextual memory and conversation flow with narrator protection.
         
         Args:
             context: Conversation context
@@ -157,6 +162,12 @@ class ContextualRefiner:
         Returns:
             Predicted speaker name or None
         """
+        # ENHANCEMENT: Narrator protection for non-dialogue text
+        narrator_protection = self._apply_narrator_protection(target_text, context)
+        if narrator_protection:
+            self.logger.debug(f"Narrator protection applied: {narrator_protection}")
+            return narrator_protection
+        
         # First, try turn-taking pattern analysis
         turn_taking_prediction = self._analyze_turn_taking_patterns(context, target_text)
         if turn_taking_prediction:
@@ -166,9 +177,49 @@ class ContextualRefiner:
         # If turn-taking fails, use LLM with rich context
         return self._get_llm_contextual_prediction(context, target_text, text_metadata)
     
+    def _apply_narrator_protection(self, text: str, context: Dict[str, Any]) -> Optional[str]:
+        """
+        Apply narrator protection to prevent internal monologue from being misattributed.
+        
+        Args:
+            text: Text to check
+            context: Conversation context
+            
+        Returns:
+            'narrator' if protection should be applied, None otherwise
+        """
+        # Get dialogue confidence
+        dialogue_confidence = self._get_dialogue_confidence(text)
+        
+        # Strong protection: Very low dialogue confidence should remain narrator
+        if dialogue_confidence < 0.3:
+            self.logger.debug(f"Strong narrator protection: dialogue confidence {dialogue_confidence:.2f}")
+            return 'narrator'
+        
+        # Medium protection: Text without quotation marks but with internal thought patterns
+        if dialogue_confidence < 0.6:
+            import re
+            
+            # Check for internal thought indicators
+            internal_indicators = [
+                r'\b(?:he|she|they|it)\s+(?:thought|wondered|considered|realized|remembered|knew|felt|understood)',
+                r'\b(?:his|her|their|its)\s+(?:thoughts?|mind|memory|feelings?)',
+                r'\bwas\s+(?:thinking|wondering|considering)',
+                r'\bit\s+(?:wasn\'t|was|seemed|appeared)',
+                r'\b(?:the\s+)?(?:genre|novel|story|book)\s+(?:of|was|had)',
+            ]
+            
+            for pattern in internal_indicators:
+                if re.search(pattern, text, re.IGNORECASE):
+                    self.logger.debug(f"Medium narrator protection: internal thought pattern detected")
+                    return 'narrator'
+        
+        # No protection needed
+        return None
+    
     def _analyze_turn_taking_patterns(self, context: Dict[str, Any], target_text: str) -> Optional[str]:
         """
-        Analyze conversation turn-taking patterns to predict speaker.
+        ENHANCED: Analyze conversation turn-taking patterns to predict speaker with content awareness.
         
         Args:
             context: Conversation context
@@ -177,23 +228,133 @@ class ContextualRefiner:
         Returns:
             Predicted speaker based on turn-taking patterns
         """
-        if not self._is_dialogue_text(target_text):
-            return 'narrator'  # Non-dialogue is usually narrator
+        # ENHANCEMENT 1: Check for explicit attributions first (highest priority)
+        explicit_speaker = self._detect_explicit_attribution(target_text)
+        if explicit_speaker:
+            self.logger.debug(f"Found explicit attribution: {explicit_speaker}")
+            return explicit_speaker
+        
+        # ENHANCEMENT 2: Content-based duplicate detection
+        duplicate_speaker = self._check_for_content_duplicates(context, target_text)
+        if duplicate_speaker:
+            self.logger.debug(f"Found content duplicate, using previous attribution: {duplicate_speaker}")
+            return duplicate_speaker
+        
+        # ENHANCEMENT 3: Stronger dialogue requirement for character attribution
+        if not self._is_strong_dialogue_text(target_text):
+            return 'narrator'  # Non-dialogue should remain narrator
         
         previous_speakers = context['previous_speakers']
         if not previous_speakers:
             return None  # No context to work with
         
-        # Pattern 1: Simple alternation (A -> B -> A -> B)
+        # ENHANCEMENT 4: Content-aware turn-taking patterns
+        return self._apply_content_aware_turn_taking(previous_speakers, target_text, context)
+    
+    def _detect_explicit_attribution(self, text: str) -> Optional[str]:
+        """
+        Detect explicit speaker attributions like '"Hello," said John.'
+        
+        Args:
+            text: Text to check for explicit attribution
+            
+        Returns:
+            Speaker name if explicitly attributed, None otherwise
+        """
+        import re
+        
+        # Common attribution patterns
+        attribution_patterns = [
+            r'"[^"]*"\s*,?\s*(\w+(?:\s+\w+)*)\s+(?:said|asked|replied|answered|whispered|shouted|exclaimed|muttered|cried)',
+            r'(\w+(?:\s+\w+)*)\s+(?:said|asked|replied|answered|whispered|shouted|exclaimed|muttered|cried)\s*,?\s*"[^"]*"',
+            r'"[^"]*"\s*—\s*(\w+(?:\s+\w+)*)',
+            r'(\w+(?:\s+\w+)*)\s*:\s*"[^"]*"',  # Script format
+        ]
+        
+        for pattern in attribution_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                speaker_name = match.group(1).strip()
+                # Basic validation - should be a proper name
+                if speaker_name and speaker_name[0].isupper() and len(speaker_name) > 1:
+                    # Filter out common non-speaker words
+                    non_speakers = {'said', 'asked', 'replied', 'answered', 'whispered', 'shouted', 'exclaimed', 'muttered', 'cried', 'he', 'she', 'they', 'it'}
+                    if speaker_name.lower() not in non_speakers:
+                        return speaker_name.title()
+        
+        return None
+    
+    def _check_for_content_duplicates(self, context: Dict[str, Any], target_text: str) -> Optional[str]:
+        """
+        Check if the target text appears in recent conversation flow.
+        If so, use the same speaker attribution.
+        
+        Args:
+            context: Conversation context
+            target_text: Text to check for duplicates
+            
+        Returns:
+            Speaker from previous identical content, None if no duplicates
+        """
+        target_clean = target_text.strip().lower()
+        
+        # Check recent conversation flow for identical content
+        for flow_item in reversed(context.get('conversation_flow', [])):
+            flow_text = flow_item.get('text', '').strip().lower()
+            flow_speaker = flow_item.get('speaker', '')
+            
+            # If we find identical text with a non-ambiguous speaker
+            if (flow_text == target_clean and 
+                flow_speaker not in ['AMBIGUOUS', 'UNFIXABLE', 'unknown', 'narrator']):
+                return flow_speaker
+        
+        return None
+    
+    def _is_strong_dialogue_text(self, text: str) -> bool:
+        """
+        Enhanced dialogue detection requiring stronger evidence.
+        
+        Args:
+            text: Text to check
+            
+        Returns:
+            True if text shows strong evidence of being dialogue
+        """
+        # Must have quotation marks for strong dialogue classification
+        has_quotes = any(marker in text for marker in ['"', '"', '"'])
+        
+        # Or other strong dialogue indicators
+        has_dialogue_markers = any(marker in text for marker in ['—', '–'])
+        has_script_format = ':' in text and text.strip().endswith('"')
+        
+        return has_quotes or has_dialogue_markers or has_script_format
+    
+    def _apply_content_aware_turn_taking(self, previous_speakers: List[str], target_text: str, context: Dict[str, Any]) -> Optional[str]:
+        """
+        Apply turn-taking patterns with content awareness.
+        
+        Args:
+            previous_speakers: List of previous speakers
+            target_text: Text to attribute
+            context: Full conversation context
+            
+        Returns:
+            Predicted speaker based on enhanced turn-taking logic
+        """
+        # Pattern 1: Simple alternation (A -> B -> A -> B) - but with content validation
         if len(previous_speakers) >= 2:
             last_speaker = previous_speakers[-1]
             second_last_speaker = previous_speakers[-2]
             
             # If the last two speakers were different, expect alternation
             if last_speaker != second_last_speaker:
-                return second_last_speaker  # Return to previous speaker
+                predicted_speaker = second_last_speaker
+                
+                # VALIDATION: Check if this attribution makes sense given content
+                if self._validate_speaker_content_match(predicted_speaker, target_text, context):
+                    return predicted_speaker
         
-        # Pattern 2: Avoid immediate repetition
+        # Pattern 2: Avoid immediate repetition with content awareness
         if len(previous_speakers) >= 1:
             last_speaker = previous_speakers[-1]
             unique_speakers = list(set(previous_speakers))
@@ -202,12 +363,44 @@ class ContextualRefiner:
             if len(unique_speakers) > 1:
                 other_speakers = [s for s in unique_speakers if s != last_speaker]
                 if other_speakers:
-                    # Prefer the most recent other speaker
+                    # Find the most contextually appropriate speaker
                     for speaker in reversed(previous_speakers):
-                        if speaker != last_speaker:
+                        if (speaker != last_speaker and 
+                            self._validate_speaker_content_match(speaker, target_text, context)):
                             return speaker
         
         return None  # No clear pattern
+    
+    def _validate_speaker_content_match(self, speaker: str, text: str, context: Dict[str, Any]) -> bool:
+        """
+        Validate if a speaker attribution makes sense given the content.
+        
+        Args:
+            speaker: Proposed speaker
+            text: Text content
+            context: Conversation context
+            
+        Returns:
+            True if the attribution seems reasonable
+        """
+        # Always accept narrator for non-dialogue
+        if speaker == 'narrator' and not self._is_strong_dialogue_text(text):
+            return True
+        
+        # For character speakers, require dialogue-like text
+        if speaker != 'narrator' and not self._is_strong_dialogue_text(text):
+            return False
+        
+        # Check if this speaker has spoken recently (recency bias)
+        recent_speakers = context.get('previous_speakers', [])[-3:]  # Last 3 speakers
+        if speaker in recent_speakers:
+            return True
+        
+        # If speaker hasn't spoken recently, require stronger evidence
+        # (This prevents random speaker assignments)
+        return len(recent_speakers) < 2  # Only allow if we don't have much context
+        
+        return True
     
     def _get_llm_contextual_prediction(self, context: Dict[str, Any], target_text: str, text_metadata: Dict[str, Any]) -> Optional[str]:
         """
@@ -280,7 +473,7 @@ class ContextualRefiner:
                 flow_lines.append(f"{i}. {speaker}: {text_preview}")
             flow_context = "\\n".join(flow_lines)
         
-        prompt = f"""You are analyzing conversation flow to identify a speaker. Based on the conversation context and turn-taking patterns, identify who is most likely speaking the target line.
+        prompt = f"""You are analyzing conversation flow to identify a speaker. You must distinguish between spoken dialogue, internal thoughts, and narrative description.
 
 CHARACTERS:
 {character_context}
@@ -291,11 +484,27 @@ RECENT CONVERSATION:
 TARGET LINE TO ATTRIBUTE:
 "{target_text}"
 
-INSTRUCTIONS:
-1. Consider conversation flow and turn-taking patterns
-2. Use character context and previous attributions
-3. Respond with ONLY the character name (or "narrator" for narrative text)
-4. If truly uncertain, respond with "AMBIGUOUS"
+CRITICAL INSTRUCTIONS:
+1. DIALOGUE (Character Attribution): Only if the text is SPOKEN OUT LOUD
+   - Text should have quotation marks ("") or clear speech indicators
+   - Examples: "Hello there," she said. OR "How are you?"
+   
+2. INTERNAL THOUGHTS (Narrator Attribution): Character's private thoughts in third-person narrative
+   - Text like: "He thought about..." OR "She realized that..." OR "It wasn't the most popular..."
+   - NO quotation marks, describes mental state/thoughts
+   
+3. NARRATIVE DESCRIPTION (Narrator Attribution): General story narration
+   - Describes actions, settings, or events
+   - Examples: "There was a pause." OR "Someone coughed."
+
+4. Consider conversation flow ONLY for actual spoken dialogue
+5. Respond with character name ONLY for spoken dialogue, "narrator" for everything else
+6. If genuinely uncertain between characters for dialogue, respond with "AMBIGUOUS"
+
+ANALYSIS:
+- Does this text have quotation marks or clear speech indicators? 
+- Is this describing thoughts, feelings, or internal state?
+- Is this general narrative description?
 
 SPEAKER:"""
         
@@ -342,10 +551,189 @@ SPEAKER:"""
         return None
     
     def _is_dialogue_text(self, text: str) -> bool:
-        """Check if text appears to be dialogue."""
-        dialogue_markers = ['"', '"', '"', "'", '—', '–']
-        return any(marker in text for marker in dialogue_markers)
+        """
+        ENHANCED: Check if text appears to be dialogue with improved accuracy.
+        
+        This method is more conservative to prevent internal monologue from being
+        misclassified as dialogue.
+        """
+        return self._get_dialogue_confidence(text) > 0.5
     
+    def _get_dialogue_confidence(self, text: str) -> float:
+        """
+        Get confidence score (0.0-1.0) that text is dialogue.
+        
+        Args:
+            text: Text to analyze
+            
+        Returns:
+            Confidence score where 1.0 = definitely dialogue, 0.0 = definitely not dialogue
+        """
+        if not text or not text.strip():
+            return 0.0
+        
+        confidence = 0.0
+        text_clean = text.strip()
+        
+        # Strong positive indicators (high confidence)
+        if any(marker in text for marker in ['"', '"', '"']):
+            confidence += 0.8  # Quotation marks are strong dialogue indicators
+            
+        # Medium positive indicators
+        if any(marker in text for marker in ['—', '–']):
+            confidence += 0.4  # Em/en dashes often indicate dialogue
+            
+        if text_clean.endswith(':') or text_clean.startswith('"'):
+            confidence += 0.3  # Script format or opening quote
+            
+        # Speech verb patterns
+        import re
+        speech_verbs = r'\b(?:said|asked|replied|answered|whispered|shouted|exclaimed|muttered|cried|thought|wondered)\b'
+        if re.search(speech_verbs, text, re.IGNORECASE):
+            confidence += 0.2
+        
+        # Negative indicators (reduce confidence)
+        # Internal thought patterns
+        internal_patterns = [
+            r'\b(?:he|she|they|it)\s+(?:thought|wondered|considered|realized|remembered|knew|felt|understood)',
+            r'\b(?:his|her|their|its)\s+(?:thoughts?|mind|memory|feelings?)',
+            r'\bwas\s+(?:thinking|wondering|considering)',
+            r'\bit\s+(?:wasn\'t|was|seemed|appeared)',
+        ]
+        
+        for pattern in internal_patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                confidence -= 0.3
+                
+        # Narrative description patterns
+        narrative_patterns = [
+            r'\b(?:the|a|an)\s+\w+\s+(?:was|were|had|did|could|would|should)',
+            r'\b(?:there|here)\s+(?:was|were|had)',
+            r'\b(?:it|this|that)\s+(?:was|were|had|seemed|appeared)',
+        ]
+        
+        for pattern in narrative_patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                confidence -= 0.2
+        
+        # Ensure confidence stays in valid range
+        return max(0.0, min(1.0, confidence))
+    
+    def _preprocess_segments_for_duplicates(self, segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Preprocess segments to detect and merge consecutive duplicates.
+        
+        This addresses the issue where identical text gets split into multiple segments
+        and then attributed to different speakers by the turn-taking logic.
+        
+        Args:
+            segments: List of segments to preprocess
+            
+        Returns:
+            List of segments with duplicates merged
+        """
+        if not segments:
+            return segments
+        
+        processed_segments = []
+        current_segment = None
+        merge_count = 0
+        
+        for i, segment in enumerate(segments):
+            text = segment.get('text', '').strip()
+            speaker = segment.get('speaker', '')
+            
+            # Skip empty segments
+            if not text:
+                continue
+            
+            # If this is the first segment or differs from current
+            if current_segment is None:
+                current_segment = segment.copy()
+                processed_segments.append(current_segment)
+            else:
+                current_text = current_segment.get('text', '').strip()
+                
+                # Check for exact duplicate text
+                if text == current_text:
+                    # Found duplicate - merge with current segment
+                    merge_count += 1
+                    self.logger.debug(f"Merging duplicate segment {i}: {repr(text[:50])}")
+                    
+                    # Preserve metadata from both segments
+                    self._merge_segment_metadata(current_segment, segment)
+                    
+                    # Continue to next segment without adding this one
+                    continue
+                else:
+                    # Different text - start new current segment
+                    current_segment = segment.copy()
+                    processed_segments.append(current_segment)
+        
+        if merge_count > 0:
+            self.logger.info(f"Merged {merge_count} duplicate segments ({len(segments)} -> {len(processed_segments)})")
+        
+        return processed_segments
+    
+    def _merge_segment_metadata(self, target_segment: Dict[str, Any], source_segment: Dict[str, Any]):
+        """
+        Merge metadata from source segment into target segment.
+        
+        Args:
+            target_segment: Segment to merge into (modified in place)
+            source_segment: Segment to merge from
+        """
+        # Combine error lists
+        target_errors = target_segment.get('errors', [])
+        source_errors = source_segment.get('errors', [])
+        if source_errors:
+            all_errors = list(set(target_errors + source_errors))
+            target_segment['errors'] = all_errors
+        
+        # Track merge in metadata
+        if 'merged_count' not in target_segment:
+            target_segment['merged_count'] = 1
+        target_segment['merged_count'] += 1
+        
+        # Preserve refinement information if present
+        if source_segment.get('refined'):
+            target_segment['merged_refined'] = True
+        
+        # Update confidence if present
+        source_confidence = source_segment.get('confidence', 0)
+        target_confidence = target_segment.get('confidence', 0)
+        if source_confidence > 0 or target_confidence > 0:
+            target_segment['confidence'] = max(source_confidence, target_confidence)
+    
+    def _update_refinement_indices_after_preprocessing(self, preprocessed_segments: List[Dict[str, Any]]) -> List[int]:
+        """
+        Update refinement indices after segment preprocessing/merging.
+        
+        Args:
+            preprocessed_segments: Segments after duplicate merging
+            
+        Returns:
+            Updated list of indices that need refinement
+        """
+        refinement_indices = []
+        
+        for i, segment in enumerate(preprocessed_segments):
+            speaker = segment.get('speaker', '').strip()
+            text = segment.get('text', '').strip()
+            errors = segment.get('errors', [])
+            
+            # Standard AMBIGUOUS segments
+            if speaker == 'AMBIGUOUS':
+                refinement_indices.append(i)
+            # Unfixable segments that contain dialogue (likely misclassified)
+            elif speaker.lower() in ['unfixable', 'UNFIXABLE'] and self._is_dialogue_text(text):
+                refinement_indices.append(i)
+            # Segments with dialogue_as_narrator errors
+            elif 'dialogue_as_narrator' in errors and self._is_dialogue_text(text):
+                refinement_indices.append(i)
+        
+        return refinement_indices
+
     def _infer_gender_from_pronouns(self, pronouns: List[str]) -> Optional[str]:
         """Infer gender from pronoun list."""
         pronoun_set = set(p.lower() for p in pronouns)

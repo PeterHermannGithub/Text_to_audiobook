@@ -29,4 +29,6 @@ MAX_REFINEMENT_ITERATIONS = 2
 SPACY_MODEL = "en_core_web_sm"
 
 # Logging Configuration
-LOG_LEVEL = "DEBUG"
+LOG_LEVEL = "INFO"  # Changed from DEBUG to reduce terminal noise
+CONSOLE_LOG_LEVEL = "INFO"  # Level for console output
+FILE_LOG_LEVEL = "DEBUG"    # Level for file output (more detailed)
