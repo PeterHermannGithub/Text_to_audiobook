@@ -19,20 +19,33 @@ class ContextualRefiner:
         self.context_window = 5  # Number of previous segments to consider
         self.max_iterations = 2  # Maximum refinement iterations
         
-    def refine_ambiguous_speakers(self, structured_segments: List[Dict[str, Any]], text_metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def refine_ambiguous_speakers(self, structured_segments: List[Dict[str, Any]], text_metadata: Dict[str, Any], 
+                                 validation_errors: List[str] = None, error_summary: Dict[str, int] = None) -> List[Dict[str, Any]]:
         """
-        Refine segments with AMBIGUOUS or problematic speaker attributions using contextual memory.
+        ENHANCED: Refine segments with error-specific strategies based on validation feedback.
         
         Args:
             structured_segments: List of segments with speaker/text
             text_metadata: Rich metadata including character profiles
+            validation_errors: Detailed error messages from SimplifiedValidator
+            error_summary: Summary of error types and counts
             
         Returns:
             List of segments with improved speaker attributions
         """
-        self.logger.info(f"Starting contextual refinement on {len(structured_segments)} segments")
+        self.logger.info(f"Starting enhanced contextual refinement on {len(structured_segments)} segments")
         
-        # Find all segments that need refinement (AMBIGUOUS + dialogue misattributed as Unfixable)
+        # ENHANCED: Log error-specific strategy information
+        if validation_errors:
+            self.logger.info(f"Using {len(validation_errors)} detailed validation errors for targeted refinement")
+        if error_summary:
+            self.logger.info(f"Error summary: {error_summary}")
+        
+        # ENHANCED: Apply error-specific pre-processing strategies
+        if error_summary:
+            structured_segments = self._apply_error_specific_preprocessing(structured_segments, error_summary, text_metadata)
+        
+        # Find all segments that need refinement (AMBIGUOUS + dialogue misattributed as Unfixable + error-flagged)
         refinement_indices = []
         for i, segment in enumerate(structured_segments):
             speaker = segment.get('speaker', '').strip()
@@ -65,19 +78,24 @@ class ContextualRefiner:
         # Update refinement indices after potential segment merging
         refinement_indices = self._update_refinement_indices_after_preprocessing(refined_segments)
         
-        # Process each problematic segment
+        # ENHANCED: Process each problematic segment with error-specific strategies
         successful_refinements = 0
         
         for segment_idx in refinement_indices:
             old_speaker = refined_segments[segment_idx]['speaker']
-            self.logger.debug(f"Refining segment {segment_idx} ({old_speaker}): {repr(refined_segments[segment_idx]['text'][:100])}")
+            segment_errors = refined_segments[segment_idx].get('errors', [])
+            segment_text = refined_segments[segment_idx]['text']
+            
+            self.logger.debug(f"Refining segment {segment_idx} ({old_speaker}): {repr(segment_text[:100])}")
+            if segment_errors:
+                self.logger.debug(f"Segment has errors: {segment_errors}")
             
             # Build conversation context
             context = self._build_conversation_context(refined_segments, segment_idx)
             
-            # Generate contextual refinement prompt
-            refined_speaker = self._get_contextual_speaker_prediction(
-                context, refined_segments[segment_idx]['text'], text_metadata
+            # ENHANCED: Choose refinement strategy based on error types
+            refined_speaker = self._apply_error_specific_refinement(
+                segment_idx, refined_segments[segment_idx], context, text_metadata, segment_errors
             )
             
             if refined_speaker and refined_speaker not in ['AMBIGUOUS', 'UNFIXABLE']:
@@ -750,4 +768,257 @@ SPEAKER:"""
         if pronoun_set & neutral_pronouns:
             return 'neutral'
         
+        return None
+
+    # ========================================
+    # ERROR-SPECIFIC REFINEMENT METHODS
+    # ========================================
+    
+    def _apply_error_specific_preprocessing(self, segments: List[Dict[str, Any]], error_summary: Dict[str, int], text_metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Apply error-specific preprocessing strategies based on validation error summary.
+        
+        Args:
+            segments: List of segments to preprocess
+            error_summary: Summary of error types and counts
+            text_metadata: Character and format metadata
+            
+        Returns:
+            Preprocessed segments with error-specific improvements
+        """
+        self.logger.debug(f"Applying error-specific preprocessing for: {list(error_summary.keys())}")
+        
+        # Strategy 1: dialogue_as_narrator errors - Pre-identify dialogue segments
+        if 'dialogue_as_narrator' in error_summary:
+            segments = self._preprocess_dialogue_as_narrator_errors(segments, text_metadata)
+        
+        # Strategy 2: narrative_as_dialogue errors - Pre-identify narrative segments  
+        if 'narrative_as_dialogue' in error_summary:
+            segments = self._preprocess_narrative_as_dialogue_errors(segments, text_metadata)
+        
+        # Strategy 3: unknown_speaker errors - Pre-validate character names
+        if 'unknown_speaker' in error_summary:
+            segments = self._preprocess_unknown_speaker_errors(segments, text_metadata)
+        
+        # Strategy 4: consecutive_same_speaker errors - Pre-identify merge candidates
+        if 'consecutive_same_speaker' in error_summary:
+            segments = self._preprocess_consecutive_speaker_errors(segments)
+        
+        return segments
+    
+    def _apply_error_specific_refinement(self, segment_idx: int, segment: Dict[str, Any], 
+                                       context: Dict[str, Any], text_metadata: Dict[str, Any], 
+                                       segment_errors: List[str]) -> Optional[str]:
+        """
+        Apply targeted refinement strategies based on specific error types.
+        
+        Args:
+            segment_idx: Index of segment being refined
+            segment: Segment dictionary with speaker/text/errors
+            context: Conversation context
+            text_metadata: Character and format metadata
+            segment_errors: List of error types for this segment
+            
+        Returns:
+            Refined speaker name or None if refinement failed
+        """
+        segment_text = segment.get('text', '')
+        current_speaker = segment.get('speaker', '')
+        
+        # Error-specific refinement strategies (in priority order)
+        
+        # Priority 1: dialogue_as_narrator - Force character attribution for dialogue
+        if 'dialogue_as_narrator' in segment_errors:
+            refined_speaker = self._refine_dialogue_as_narrator(segment_text, context, text_metadata)
+            if refined_speaker:
+                self.logger.debug(f"dialogue_as_narrator fix: '{current_speaker}' -> '{refined_speaker}'")
+                return refined_speaker
+        
+        # Priority 2: narrative_as_dialogue - Force narrator attribution for narrative
+        if 'narrative_as_dialogue' in segment_errors:
+            refined_speaker = self._refine_narrative_as_dialogue(segment_text, context, text_metadata)
+            if refined_speaker:
+                self.logger.debug(f"narrative_as_dialogue fix: '{current_speaker}' -> '{refined_speaker}'")
+                return refined_speaker
+        
+        # Priority 3: unknown_speaker - Character name validation and fuzzy matching
+        if 'unknown_speaker' in segment_errors:
+            refined_speaker = self._refine_unknown_speaker(segment_text, current_speaker, text_metadata)
+            if refined_speaker:
+                self.logger.debug(f"unknown_speaker fix: '{current_speaker}' -> '{refined_speaker}'")
+                return refined_speaker
+        
+        # Priority 4: consecutive_same_speaker - Conversation flow analysis
+        if 'consecutive_same_speaker' in segment_errors:
+            refined_speaker = self._refine_consecutive_same_speaker(segment_idx, segment, context, text_metadata)
+            if refined_speaker:
+                self.logger.debug(f"consecutive_same_speaker fix: '{current_speaker}' -> '{refined_speaker}'")
+                return refined_speaker
+        
+        # Fallback: Use general contextual prediction for other errors or AMBIGUOUS
+        if current_speaker == 'AMBIGUOUS' or not segment_errors:
+            return self._get_contextual_speaker_prediction(context, segment_text, text_metadata)
+        
+        return None
+    
+    def _preprocess_dialogue_as_narrator_errors(self, segments: List[Dict[str, Any]], text_metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Preprocess segments to identify dialogue incorrectly attributed to narrator."""
+        for segment in segments:
+            if segment.get('speaker') == 'narrator' and self._is_strong_dialogue_text(segment.get('text', '')):
+                # Flag as potential dialogue_as_narrator error
+                if 'preprocessing_flags' not in segment:
+                    segment['preprocessing_flags'] = []
+                segment['preprocessing_flags'].append('potential_dialogue_as_narrator')
+        return segments
+    
+    def _preprocess_narrative_as_dialogue_errors(self, segments: List[Dict[str, Any]], text_metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Preprocess segments to identify narrative incorrectly attributed to characters."""
+        known_characters = set()
+        if text_metadata:
+            known_characters = text_metadata.get('potential_character_names', set())
+            for profile in text_metadata.get('character_profiles', []):
+                known_characters.add(profile['name'])
+        
+        for segment in segments:
+            speaker = segment.get('speaker', '')
+            text = segment.get('text', '')
+            if speaker in known_characters and not self._is_strong_dialogue_text(text):
+                # Flag as potential narrative_as_dialogue error
+                if 'preprocessing_flags' not in segment:
+                    segment['preprocessing_flags'] = []
+                segment['preprocessing_flags'].append('potential_narrative_as_dialogue')
+        return segments
+    
+    def _preprocess_unknown_speaker_errors(self, segments: List[Dict[str, Any]], text_metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Preprocess segments to validate character names."""
+        known_characters = set()
+        if text_metadata:
+            known_characters = text_metadata.get('potential_character_names', set())
+            for profile in text_metadata.get('character_profiles', []):
+                known_characters.add(profile['name'])
+                known_characters.update(profile.get('aliases', []))
+        
+        for segment in segments:
+            speaker = segment.get('speaker', '')
+            if speaker not in ['narrator', 'AMBIGUOUS'] and speaker not in known_characters:
+                # Flag as potential unknown_speaker error
+                if 'preprocessing_flags' not in segment:
+                    segment['preprocessing_flags'] = []
+                segment['preprocessing_flags'].append('potential_unknown_speaker')
+        return segments
+    
+    def _preprocess_consecutive_speaker_errors(self, segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Preprocess segments to identify consecutive same speaker patterns."""
+        for i in range(1, len(segments)):
+            current_speaker = segments[i].get('speaker', '')
+            prev_speaker = segments[i-1].get('speaker', '')
+            
+            if (current_speaker == prev_speaker and 
+                current_speaker not in ['narrator', 'AMBIGUOUS'] and
+                self._is_dialogue_text(segments[i].get('text', '')) and
+                self._is_dialogue_text(segments[i-1].get('text', ''))):
+                
+                # Flag as potential consecutive_same_speaker error
+                for segment in [segments[i-1], segments[i]]:
+                    if 'preprocessing_flags' not in segment:
+                        segment['preprocessing_flags'] = []
+                    segment['preprocessing_flags'].append('potential_consecutive_same_speaker')
+        return segments
+    
+    def _refine_dialogue_as_narrator(self, text: str, context: Dict[str, Any], text_metadata: Dict[str, Any]) -> Optional[str]:
+        """Refine dialogue incorrectly attributed to narrator."""
+        if not self._is_strong_dialogue_text(text):
+            return None  # Not actually dialogue
+        
+        # Strategy 1: Use conversation flow to determine speaker
+        previous_speakers = context.get('previous_speakers', [])
+        if previous_speakers:
+            # Use turn-taking patterns
+            character_speakers = [s for s in previous_speakers if s not in ['narrator', 'AMBIGUOUS']]
+            if character_speakers:
+                # Simple alternation heuristic
+                return character_speakers[-1] if len(character_speakers) % 2 == 1 else 'AMBIGUOUS'
+        
+        # Strategy 2: Look for explicit attribution in the text
+        explicit_speaker = self._detect_explicit_attribution(text)
+        if explicit_speaker:
+            return explicit_speaker
+        
+        # Strategy 3: Character name presence
+        known_characters = set()
+        if text_metadata:
+            known_characters = text_metadata.get('potential_character_names', set())
+            for profile in text_metadata.get('character_profiles', []):
+                known_characters.add(profile['name'])
+        
+        for char in known_characters:
+            if char.lower() in text.lower():
+                return char
+        
+        return 'AMBIGUOUS'  # Can't determine specific character
+    
+    def _refine_narrative_as_dialogue(self, text: str, context: Dict[str, Any], text_metadata: Dict[str, Any]) -> Optional[str]:
+        """Refine narrative incorrectly attributed to characters."""
+        if self._is_strong_dialogue_text(text):
+            return None  # Actually is dialogue, don't change
+        
+        # Force to narrator for non-dialogue text
+        return 'narrator'
+    
+    def _refine_unknown_speaker(self, text: str, current_speaker: str, text_metadata: Dict[str, Any]) -> Optional[str]:
+        """Refine unknown speaker using fuzzy matching and validation."""
+        if not text_metadata:
+            return 'AMBIGUOUS'
+        
+        known_characters = set()
+        known_characters = text_metadata.get('potential_character_names', set())
+        for profile in text_metadata.get('character_profiles', []):
+            known_characters.add(profile['name'])
+            known_characters.update(profile.get('aliases', []))
+        
+        # Strategy 1: Fuzzy matching with known characters
+        try:
+            from fuzzywuzzy import process
+            best_match = process.extractOne(current_speaker, list(known_characters))
+            if best_match and best_match[1] > 80:  # 80% similarity threshold
+                return best_match[0]
+        except ImportError:
+            pass
+        
+        # Strategy 2: Check if it's actually narrator or AMBIGUOUS
+        if not self._is_dialogue_text(text):
+            return 'narrator'
+        
+        return 'AMBIGUOUS'
+    
+    def _refine_consecutive_same_speaker(self, segment_idx: int, segment: Dict[str, Any], 
+                                       context: Dict[str, Any], text_metadata: Dict[str, Any]) -> Optional[str]:
+        """Refine consecutive same speaker attribution using conversation flow."""
+        current_speaker = segment.get('speaker', '')
+        text = segment.get('text', '')
+        
+        # If it's not dialogue, it should probably be narrator
+        if not self._is_dialogue_text(text):
+            return 'narrator'
+        
+        # Use conversation flow analysis to determine if alternation is needed
+        previous_speakers = context.get('previous_speakers', [])
+        if len(previous_speakers) >= 2:
+            last_two = previous_speakers[-2:]
+            if len(set(last_two)) == 1:  # Same speaker for last two turns
+                # Look for other characters to alternate with
+                all_characters = set()
+                if text_metadata:
+                    all_characters = text_metadata.get('potential_character_names', set())
+                    for profile in text_metadata.get('character_profiles', []):
+                        all_characters.add(profile['name'])
+                
+                other_characters = all_characters - {current_speaker}
+                if other_characters:
+                    # Use most recently mentioned other character
+                    for char in reversed(previous_speakers):
+                        if char in other_characters:
+                            return char
+        
+        # If conversation flow doesn't suggest a change, keep current speaker
         return None

@@ -20,7 +20,17 @@ def main():
     parser.add_argument("--model", default=settings.DEFAULT_LOCAL_MODEL, choices=["mistral", "llama3"], help="Local model to use if --engine is 'local'.")
     parser.add_argument("--project_id", help="Google Cloud project ID. Required if --engine is 'gcp' or if --skip-voice-casting is not set.")
     parser.add_argument("--location", default=settings.GCP_LOCATION, help="Google Cloud location. Required if --engine is 'gcp' or if --skip-voice-casting is not set.")
+    parser.add_argument("--debug-llm", action="store_true", help="Enable detailed LLM interaction logging (prompts, responses, processing steps). Debug logs are written to logs/llm_debug.log")
     args = parser.parse_args()
+
+    # Handle debug LLM flag - override settings if enabled
+    if args.debug_llm:
+        print("🔍 LLM Debug Mode Enabled - Detailed logging will be written to logs/llm_debug.log")
+        print("   This will log all prompts, responses, and processing steps for debugging purposes.")
+        settings.LLM_DEBUG_LOGGING = True
+        # Ensure we have detailed logging for the main system too
+        settings.LOG_LEVEL = "DEBUG"
+        settings.CONSOLE_LOG_LEVEL = "DEBUG"
 
     if not args.input_file and not args.structured_input_file:
         parser.error("Either input_file or --structured-input-file must be provided.")

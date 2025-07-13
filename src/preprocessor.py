@@ -67,14 +67,16 @@ class TextPreprocessor:
 
     def analyze(self, text):
         """
-        Analyzes the raw text to extract structural hints and rich character profiles.
+        Analyzes the raw text to extract structural hints, character profiles, and POV analysis.
+        Enhanced with Ultrathink architecture's POV analysis.
         """
         metadata = {
             "dialogue_markers": set(),
             "scene_breaks": [], # List of character indices where scene breaks occur
             "character_profiles": [],  # Rich character profiles (NEW)
             "potential_character_names": set(),  # Maintained for backward compatibility
-            "is_script_like": False
+            "is_script_like": False,
+            "pov_analysis": {}  # NEW: Point of view analysis (Ultrathink)
         }
 
         # 1. Normalization
@@ -107,6 +109,10 @@ class TextPreprocessor:
         # 3.5. Document Structure Analysis
         document_structure = self._analyze_document_structure(text)
         metadata['document_structure'] = document_structure
+
+        # 3.7. POV Analysis (Ultrathink Architecture - Phase 1)
+        pov_analysis = self.analyze_pov_profile(text)
+        metadata['pov_analysis'] = pov_analysis
 
         # 4. Enhanced Character Profiling
         character_profiles = self._extract_character_profiles(text, doc)
@@ -540,6 +546,272 @@ class TextPreprocessor:
         structure['complexity_score'] = sum(complexity_factors) / len(complexity_factors)
         
         return structure
+    
+    def analyze_pov_profile(self, text: str) -> Dict[str, Any]:
+        """
+        Analyze the narrative point of view (POV) of the text using sophisticated pronoun analysis.
+        
+        This method implements the Ultrathink architecture's Phase 1: Dynamic POV Analysis.
+        It analyzes a sample of the text to determine narrative perspective and identify narrators.
+        
+        Args:
+            text: Full text to analyze
+            
+        Returns:
+            Dictionary containing POV analysis results
+        """
+        # Extract sample text for analysis
+        words = text.split()
+        sample_size = min(settings.POV_SAMPLE_SIZE, len(words))
+        sample_text = ' '.join(words[:sample_size])
+        
+        # Initialize POV analysis result
+        pov_analysis = {
+            'type': 'UNKNOWN',
+            'confidence': 0.0,
+            'narrator_identifier': None,
+            'sample_stats': {
+                'words_analyzed': sample_size,
+                'first_person_count': 0,
+                'third_person_count': 0,
+                'first_person_ratio': 0.0,
+                'third_person_ratio': 0.0
+            },
+            'perspective_shifts': [],
+            'narrator_discovery': {
+                'attempted': False,
+                'success': False,
+                'candidate_names': [],
+                'selected_name': None
+            }
+        }
+        
+        # Count first-person and third-person pronouns
+        first_person_pronouns = {'i', 'me', 'my', 'mine', 'myself', 'we', 'us', 'our', 'ours', 'ourselves'}
+        third_person_pronouns = {'he', 'she', 'they', 'him', 'her', 'them', 'his', 'hers', 'their', 'theirs', 'himself', 'herself', 'themselves'}
+        
+        # Use word boundaries for accurate counting
+        first_person_pattern = r'\b(?:' + '|'.join(first_person_pronouns) + r')\b'
+        third_person_pattern = r'\b(?:' + '|'.join(third_person_pronouns) + r')\b'
+        
+        first_person_matches = re.findall(first_person_pattern, sample_text, re.IGNORECASE)
+        third_person_matches = re.findall(third_person_pattern, sample_text, re.IGNORECASE)
+        
+        first_person_count = len(first_person_matches)
+        third_person_count = len(third_person_matches)
+        total_pronouns = first_person_count + third_person_count
+        
+        # Update sample stats
+        pov_analysis['sample_stats'].update({
+            'first_person_count': first_person_count,
+            'third_person_count': third_person_count,
+            'first_person_ratio': first_person_count / max(total_pronouns, 1),
+            'third_person_ratio': third_person_count / max(total_pronouns, 1)
+        })
+        
+        # Determine POV type using configurable threshold
+        threshold = settings.POV_PRONOUN_WEIGHT_THRESHOLD
+        
+        if first_person_count > third_person_count * threshold:
+            pov_analysis['type'] = 'FIRST_PERSON'
+            pov_analysis['confidence'] = min(0.95, first_person_count / max(third_person_count, 1) / threshold)
+            
+            # Attempt narrator discovery for first-person texts
+            if settings.POV_ENABLE_NARRATOR_DISCOVERY:
+                narrator_info = self._discover_first_person_narrator(sample_text)
+                pov_analysis['narrator_discovery'] = narrator_info
+                pov_analysis['narrator_identifier'] = narrator_info.get('selected_name', settings.POV_FALLBACK_NARRATOR_ID)
+            else:
+                pov_analysis['narrator_identifier'] = settings.POV_FALLBACK_NARRATOR_ID
+                
+        elif third_person_count > first_person_count * threshold:
+            pov_analysis['type'] = 'THIRD_PERSON'
+            pov_analysis['confidence'] = min(0.95, third_person_count / max(first_person_count, 1) / threshold)
+            pov_analysis['narrator_identifier'] = 'narrator'  # Standard third-person narrator
+            
+        else:
+            pov_analysis['type'] = 'MIXED'
+            pov_analysis['confidence'] = 0.5  # Mixed POV has moderate confidence
+            pov_analysis['narrator_identifier'] = 'narrator'  # Default to standard narrator for mixed
+            
+            # Detect perspective shifts for mixed POV
+            shifts = self._detect_perspective_shifts(sample_text)
+            pov_analysis['perspective_shifts'] = shifts
+        
+        # Ensure minimum confidence threshold
+        if pov_analysis['confidence'] < settings.POV_CONFIDENCE_THRESHOLD:
+            pov_analysis['type'] = 'MIXED'
+            pov_analysis['confidence'] = max(0.3, pov_analysis['confidence'])
+        
+        return pov_analysis
+    
+    def _discover_first_person_narrator(self, text: str) -> Dict[str, Any]:
+        """
+        Attempt to discover the narrator's name in first-person texts.
+        
+        Args:
+            text: Sample text to analyze
+            
+        Returns:
+            Dictionary containing narrator discovery results
+        """
+        discovery = {
+            'attempted': True,
+            'success': False,
+            'candidate_names': [],
+            'selected_name': None,
+            'confidence': 0.0
+        }
+        
+        # Pattern 1: "My name is X" or "I am X"
+        name_introduction_patterns = [
+            r'(?:my name is|i am|i\'m called|call me|i go by)\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)',
+            r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)[,.]?\s+(?:that\'s me|that was me|here)',
+            r'i[,.]?\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)[,.]?\s+(?:was|am|have|had)'
+        ]
+        
+        for pattern in name_introduction_patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            for match in matches:
+                candidate_name = match.strip()
+                if self._is_valid_narrator_name(candidate_name):
+                    discovery['candidate_names'].append({
+                        'name': candidate_name,
+                        'pattern': 'introduction',
+                        'confidence': 0.9
+                    })
+        
+        # Pattern 2: Dialogue attribution to first-person narrator
+        # Look for patterns like: "Text," I said. or I said, "Text"
+        dialogue_attribution_patterns = [
+            r'"[^"]*[,.]?"\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\s+(?:said|replied|asked|thought)',
+            r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\s+(?:said|replied|asked|thought)[,.]?\s+"[^"]*"'
+        ]
+        
+        for pattern in dialogue_attribution_patterns:
+            matches = re.findall(pattern, text)
+            for match in matches:
+                candidate_name = match.strip()
+                if self._is_valid_narrator_name(candidate_name):
+                    discovery['candidate_names'].append({
+                        'name': candidate_name,
+                        'pattern': 'dialogue_attribution',
+                        'confidence': 0.7
+                    })
+        
+        # Pattern 3: Others addressing the narrator
+        # Look for patterns like: "Hello, X" or addressing patterns
+        addressing_patterns = [
+            r'"[^"]*[,.]?\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)[,.]?[^"]*"',
+            r'"([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)[,.]?\s+[^"]*"'
+        ]
+        
+        for pattern in addressing_patterns:
+            matches = re.findall(pattern, text)
+            for match in matches:
+                candidate_name = match.strip()
+                if self._is_valid_narrator_name(candidate_name):
+                    discovery['candidate_names'].append({
+                        'name': candidate_name,
+                        'pattern': 'addressing',
+                        'confidence': 0.6
+                    })
+        
+        # Select the best candidate name
+        if discovery['candidate_names']:
+            # Score candidates by confidence and frequency
+            name_scores = {}
+            for candidate in discovery['candidate_names']:
+                name = candidate['name']
+                confidence = candidate['confidence']
+                if name in name_scores:
+                    name_scores[name] = max(name_scores[name], confidence)
+                else:
+                    name_scores[name] = confidence
+            
+            # Select highest scoring name
+            best_name = max(name_scores.items(), key=lambda x: x[1])
+            discovery['selected_name'] = best_name[0]
+            discovery['confidence'] = best_name[1]
+            discovery['success'] = True
+        
+        return discovery
+    
+    def _detect_perspective_shifts(self, text: str) -> List[Dict[str, Any]]:
+        """
+        Detect perspective shifts in mixed POV texts.
+        
+        Args:
+            text: Sample text to analyze
+            
+        Returns:
+            List of detected perspective shifts
+        """
+        shifts = []
+        sentences = re.split(r'[.!?]+', text)
+        
+        current_pov = None
+        
+        for i, sentence in enumerate(sentences):
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+                
+            # Determine POV of this sentence
+            first_person_count = len(re.findall(r'\b(?:i|me|my|myself)\b', sentence, re.IGNORECASE))
+            third_person_count = len(re.findall(r'\b(?:he|she|they|him|her|them)\b', sentence, re.IGNORECASE))
+            
+            sentence_pov = None
+            if first_person_count > third_person_count:
+                sentence_pov = 'FIRST_PERSON'
+            elif third_person_count > first_person_count:
+                sentence_pov = 'THIRD_PERSON'
+            
+            # Detect shift
+            if sentence_pov and current_pov and sentence_pov != current_pov:
+                shifts.append({
+                    'position': i,
+                    'from_pov': current_pov,
+                    'to_pov': sentence_pov,
+                    'sentence_preview': sentence[:50] + '...' if len(sentence) > 50 else sentence
+                })
+            
+            if sentence_pov:
+                current_pov = sentence_pov
+        
+        return shifts
+    
+    def _is_valid_narrator_name(self, name: str) -> bool:
+        """
+        Validate if a candidate name is suitable as a narrator identifier.
+        
+        Args:
+            name: Candidate narrator name
+            
+        Returns:
+            True if the name is valid for use as narrator identifier
+        """
+        if not name or len(name) < 2 or len(name) > 30:
+            return False
+        
+        # Must start with capital letter
+        if not name[0].isupper():
+            return False
+        
+        # Check for invalid patterns
+        invalid_patterns = [
+            r'^\d+$',  # Pure numbers
+            r'^[^\w\s]+$',  # Pure punctuation
+            r'chapter|section|page|book',  # Document structure words
+            r'said|asked|replied|thought',  # Dialogue tags
+            r'the|and|but|for|with',  # Common non-name words
+        ]
+        
+        for pattern in invalid_patterns:
+            if re.search(pattern, name, re.IGNORECASE):
+                return False
+        
+        return True
     
     def _normalize_character_name(self, raw_name: str) -> str:
         """
