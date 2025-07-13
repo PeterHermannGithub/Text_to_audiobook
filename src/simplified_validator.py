@@ -45,15 +45,33 @@ class SimplifiedValidator:
         # Add error flags to segments for downstream processing
         self._add_error_flags_to_segments(processed_data, errors)
         
+        # Enhanced quality report with detailed metrics
+        ambiguous_count = sum(1 for seg in segments if seg.get('speaker') == 'AMBIGUOUS')
+        unfixable_count = sum(1 for seg in segments if seg.get('speaker') == 'UNFIXABLE')
+        attributed_count = sum(1 for seg in segments if seg.get('speaker') not in ['AMBIGUOUS', 'UNFIXABLE', None, ''])
+        
         quality_report = {
             "quality_score": quality_score,
-            "error_count": len(errors),
-            "ambiguous_count": sum(1 for seg in segments if seg.get('speaker') == 'AMBIGUOUS'),
-            "total_segments": len(segments),
-            "errors": [e["message"] for e in errors]
+            "error_count": len(errors),  # Add backward compatibility field
+            "quality_band": self._get_quality_band(quality_score),
+            "attribution_metrics": {
+                "total_segments": len(segments),
+                "successfully_attributed": attributed_count,
+                "ambiguous_segments": ambiguous_count,
+                "unfixable_segments": unfixable_count,
+                "attribution_success_rate": attributed_count / len(segments) if segments else 0.0
+            },
+            "error_analysis": {
+                "total_errors": len(errors),
+                "error_rate": len(errors) / len(segments) if segments else 0.0,
+                "error_summary": self._summarize_errors(errors)
+            },
+            "detailed_errors": [e["message"] for e in errors]
         }
         
-        self.logger.info(f"Validation completed: {quality_score:.1f}% quality, {len(errors)} errors, {quality_report['ambiguous_count']} ambiguous")
+        self.logger.info(f"Validation completed: {quality_score:.1f}% quality ({self._get_quality_band(quality_score)}), "
+                         f"{len(errors)} errors, {attributed_count}/{len(segments)} attributed, "
+                         f"{ambiguous_count} ambiguous, {unfixable_count} unfixable")
         
         return processed_data, quality_report
     
@@ -197,42 +215,140 @@ class SimplifiedValidator:
                         })
     
     def _calculate_quality_score(self, segments: List[Dict[str, Any]], errors: List[Dict[str, Any]], original_length: int) -> float:
-        """Calculate overall quality score based on various factors."""
+        """
+        Calculate overall quality score using recalibrated progressive penalty system.
+        
+        Quality Bands:
+        - Excellent (90-100%): Professional-grade attribution with minimal issues
+        - Good (70-89%): High-quality attribution with minor corrections needed
+        - Fair (50-69%): Acceptable attribution requiring moderate refinement
+        - Poor (25-49%): Significant issues requiring major rework
+        - Critical (0-24%): Severe problems, major system failures
+        """
         
         if not segments:
             return 0.0
-            
-        # Base score starts at 100
-        score = 100.0
         
-        # Deduct points for errors
+        total_segments = len(segments)
+        
+        # Calculate base attribution success rate
+        successfully_attributed = sum(1 for seg in segments 
+                                    if seg.get('speaker') not in ['AMBIGUOUS', 'UNFIXABLE', None, ''])
+        attribution_success_rate = successfully_attributed / total_segments
+        
+        # Start with base score from attribution success (60% of total score)
+        base_score = attribution_success_rate * 60.0
+        
+        # Calculate error impact (30% of total score)
+        error_impact_score = self._calculate_error_impact(errors, total_segments)
+        
+        # Calculate content preservation score (10% of total score)
+        content_preservation_score = self._calculate_content_preservation(segments)
+        
+        # Combine scores
+        raw_score = base_score + error_impact_score + content_preservation_score
+        
+        # Apply ambiguity penalty (more lenient than before)
+        ambiguous_count = sum(1 for seg in segments if seg.get('speaker') == 'AMBIGUOUS')
+        ambiguous_ratio = ambiguous_count / total_segments
+        
+        # Progressive ambiguity penalty - more forgiving
+        ambiguity_penalty = 0.0
+        if ambiguous_ratio > 0.5:  # More than 50% ambiguous (was 30%)
+            ambiguity_penalty = (ambiguous_ratio - 0.5) * 30  # Reduced from 100
+        elif ambiguous_ratio > 0.2:  # More than 20% ambiguous (was 10%)
+            ambiguity_penalty = (ambiguous_ratio - 0.2) * 15  # Reduced from 50
+        
+        final_score = max(0.0, min(100.0, raw_score - ambiguity_penalty))
+        
+        # Log quality band
+        quality_band = self._get_quality_band(final_score)
+        self.logger.debug(f"Quality calculation: base={base_score:.1f}, error_impact={error_impact_score:.1f}, "
+                         f"content={content_preservation_score:.1f}, ambiguity_penalty={ambiguity_penalty:.1f}, "
+                         f"final={final_score:.1f} ({quality_band})")
+        
+        return final_score
+    
+    def _calculate_error_impact(self, errors: List[Dict[str, Any]], total_segments: int) -> float:
+        """
+        Calculate error impact score with progressive penalties.
+        Returns score out of 30 points.
+        """
+        if total_segments == 0:
+            return 0.0
+        
+        # Recalibrated error penalties (much more lenient)
         error_penalties = {
-            'missing_speaker': 10,
-            'missing_text': 10, 
-            'empty_text': 5,
-            'dialogue_as_narrator': 3,
-            'narrative_as_dialogue': 3,
-            'unknown_speaker': 2,
-            'very_long_dialogue': 1,
-            'consecutive_same_speaker': 1,
-            'too_many_single_use_speakers': 5
+            'missing_speaker': 2.0,      # Reduced from 10
+            'missing_text': 3.0,         # Reduced from 10
+            'empty_text': 1.0,           # Reduced from 5
+            'dialogue_as_narrator': 0.5, # Reduced from 3
+            'narrative_as_dialogue': 0.5,# Reduced from 3
+            'unknown_speaker': 0.3,      # Reduced from 2
+            'very_long_dialogue': 0.1,   # Reduced from 1
+            'consecutive_same_speaker': 0.1, # Reduced from 1
+            'too_many_single_use_speakers': 1.0  # Reduced from 5
         }
         
+        # Calculate total penalty
+        total_penalty = 0.0
+        error_counts = {}
+        
         for error in errors:
-            penalty = error_penalties.get(error['type'], 2)  # Default penalty
-            score -= penalty
+            error_type = error.get('type', 'unknown')
+            penalty = error_penalties.get(error_type, 0.2)  # Reduced default
+            total_penalty += penalty
+            error_counts[error_type] = error_counts.get(error_type, 0) + 1
         
-        # Deduct points for high ambiguity
-        ambiguous_count = sum(1 for seg in segments if seg.get('speaker') == 'AMBIGUOUS')
-        ambiguous_ratio = ambiguous_count / len(segments)
+        # Progressive penalty scaling - diminishing returns for many errors
+        error_ratio = len(errors) / total_segments
+        if error_ratio > 0.5:
+            # Cap penalty impact for very error-heavy content
+            total_penalty = min(total_penalty, 15.0)
         
-        if ambiguous_ratio > 0.3:  # More than 30% ambiguous
-            score -= (ambiguous_ratio - 0.3) * 100  # Heavy penalty for high ambiguity
-        elif ambiguous_ratio > 0.1:  # More than 10% ambiguous  
-            score -= (ambiguous_ratio - 0.1) * 50   # Moderate penalty
+        # Return error impact score (30 points max, minus penalties)
+        return max(0.0, 30.0 - total_penalty)
+    
+    def _calculate_content_preservation(self, segments: List[Dict[str, Any]]) -> float:
+        """
+        Calculate content preservation score.
+        Returns score out of 10 points.
+        """
+        if not segments:
+            return 0.0
         
-        # Ensure score doesn't go below 0
-        return max(0.0, score)
+        # Check for content integrity indicators
+        total_chars = sum(len(seg.get('text', '')) for seg in segments)
+        non_empty_segments = sum(1 for seg in segments if seg.get('text', '').strip())
+        
+        # Basic content preservation checks
+        preservation_score = 10.0
+        
+        # Penalty for too many empty segments
+        empty_ratio = (len(segments) - non_empty_segments) / len(segments)
+        if empty_ratio > 0.1:  # More than 10% empty
+            preservation_score -= empty_ratio * 20
+        
+        # Penalty for suspiciously short total content
+        if total_chars < 100:  # Very short content
+            preservation_score -= 5.0
+        
+        return max(0.0, preservation_score)
+    
+    def _get_quality_band(self, score: float) -> str:
+        """
+        Get quality band description for a score.
+        """
+        if score >= 90:
+            return "Excellent"
+        elif score >= 70:
+            return "Good"
+        elif score >= 50:
+            return "Fair"
+        elif score >= 25:
+            return "Poor"
+        else:
+            return "Critical"
     
     def _add_error_flags_to_segments(self, processed_data: List[Tuple[Dict[str, Any], int]], errors: List[Dict[str, Any]]):
         """Add error flags to segments for downstream processing."""
@@ -270,3 +386,15 @@ class SimplifiedValidator:
         """Check if narrative text could be internal character thoughts."""
         thought_indicators = ['thought', 'wondered', 'realized', 'remembered', 'considered']
         return any(indicator in text.lower() for indicator in thought_indicators)
+    
+    def _summarize_errors(self, errors: List[Dict[str, Any]]) -> Dict[str, int]:
+        """
+        Summarize errors by type for the quality report.
+        """
+        error_summary = {}
+        for error in errors:
+            error_type = error.get('type', 'unknown')
+            error_summary[error_type] = error_summary.get(error_type, 0) + 1
+        
+        # Sort by frequency
+        return dict(sorted(error_summary.items(), key=lambda x: x[1], reverse=True))

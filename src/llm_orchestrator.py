@@ -85,7 +85,7 @@ class LLMOrchestrator:
     
     def get_speaker_classifications(self, numbered_lines, text_metadata=None):
         """
-        Gets speaker classifications for pre-segmented lines.
+        Gets speaker classifications for pre-segmented lines with enhanced error handling.
         
         Args:
             numbered_lines: List of strings representing pre-segmented text lines
@@ -97,29 +97,48 @@ class LLMOrchestrator:
         if not numbered_lines:
             return []
             
-        max_retries = 2
+        max_retries = 3  # Increased from 2
         expected_count = len(numbered_lines)
+        
+        # Pre-validate inputs
+        if expected_count > 50:  # Large chunks might cause issues
+            self.logger.warning(f"Large input chunk ({expected_count} lines), splitting for better processing")
+            return self._process_large_chunk(numbered_lines, text_metadata)
         
         for attempt in range(max_retries + 1):
             try:
-                # Build classification prompt
-                prompt = self.build_classification_prompt(numbered_lines, text_metadata)
+                # Build classification prompt with attempt-specific optimizations
+                prompt = self._build_optimized_prompt(numbered_lines, text_metadata, attempt)
                 
-                # Get LLM response
-                response_text = self._get_llm_response(prompt)
+                # Get LLM response with enhanced validation
+                response_text = self._get_llm_response_with_validation(prompt)
                 
-                # Parse speaker array
-                speakers = self._parse_speaker_array(response_text, expected_count)
+                if not response_text or not response_text.strip():
+                    self.logger.warning(f"Attempt {attempt + 1}: Empty response from LLM")
+                    if attempt < max_retries:
+                        continue
+                    else:
+                        return self._fallback_classification(numbered_lines)
+                
+                # Parse speaker array with enhanced error recovery
+                speakers = self._parse_speaker_array_enhanced(response_text, expected_count, attempt)
                 
                 if speakers and len(speakers) == expected_count:
-                    self.logger.debug(f"Successfully classified {len(speakers)} speakers")
+                    # Validate speaker quality and fix character name association errors
+                    speakers = self._validate_and_clean_speakers(speakers, text_metadata, numbered_lines)
+                    self.logger.debug(f"Successfully classified {len(speakers)} speakers on attempt {attempt + 1}")
                     return speakers
                 elif attempt < max_retries:
-                    self.logger.warning(f"Classification attempt {attempt + 1} failed: expected {expected_count}, got {len(speakers) if speakers else 0}")
+                    self.logger.warning(f"Attempt {attempt + 1} failed: expected {expected_count}, got {len(speakers) if speakers else 0}")
                     continue
                 else:
-                    self.logger.error(f"All classification attempts failed, using fallback")
-                    return self._fallback_classification(numbered_lines)
+                    # Last attempt - try partial recovery
+                    if speakers and len(speakers) > 0:
+                        self.logger.warning(f"Partial recovery: got {len(speakers)} speakers, padding to {expected_count}")
+                        return self._pad_speaker_array(speakers, expected_count)
+                    else:
+                        self.logger.error(f"All classification attempts failed, using fallback")
+                        return self._fallback_classification(numbered_lines)
                     
             except Exception as e:
                 if attempt < max_retries:
@@ -130,6 +149,251 @@ class LLMOrchestrator:
                     return self._fallback_classification(numbered_lines)
         
         return self._fallback_classification(numbered_lines)
+    
+    def _process_large_chunk(self, numbered_lines, text_metadata):
+        """
+        Process large chunks by splitting them into smaller pieces.
+        """
+        chunk_size = 25  # Process in chunks of 25 lines
+        all_speakers = []
+        
+        for i in range(0, len(numbered_lines), chunk_size):
+            chunk = numbered_lines[i:i + chunk_size]
+            chunk_speakers = self.get_speaker_classifications(chunk, text_metadata)
+            all_speakers.extend(chunk_speakers)
+        
+        return all_speakers
+    
+    def _build_optimized_prompt(self, numbered_lines, text_metadata, attempt):
+        """
+        Build optimized prompt based on attempt number.
+        """
+        if attempt == 0:
+            # First attempt - use standard prompt
+            return self.build_classification_prompt(numbered_lines, text_metadata)
+        elif attempt == 1:
+            # Second attempt - simplified prompt
+            return self._build_simplified_prompt(numbered_lines, text_metadata)
+        else:
+            # Final attempt - minimal prompt
+            return self._build_minimal_prompt(numbered_lines, text_metadata)
+    
+    def _build_simplified_prompt(self, numbered_lines, text_metadata):
+        """
+        Build a simplified prompt for retry attempts.
+        """
+        character_names = []
+        if text_metadata:
+            character_names = list(text_metadata.get('potential_character_names', set()))[:5]  # Limit to 5
+        
+        character_context = f"\\nCharacters: {', '.join(character_names)}" if character_names else ""
+        
+        numbered_display = ""
+        for i, line in enumerate(numbered_lines, 1):
+            numbered_display += f"{i}. {line}\\n"
+        
+        return f"""Classify speakers for each line. Return JSON array with exactly {len(numbered_lines)} names.
+Use: "narrator" for description, character names for dialogue, "AMBIGUOUS" if unclear.{character_context}
+
+{numbered_display.strip()}
+
+JSON:"""
+    
+    def _build_minimal_prompt(self, numbered_lines, text_metadata):
+        """
+        Build a minimal prompt for final retry attempts.
+        """
+        numbered_display = ""
+        for i, line in enumerate(numbered_lines, 1):
+            numbered_display += f"{i}. {line}\\n"
+        
+        return f"""Return JSON array with {len(numbered_lines)} speaker names:
+
+{numbered_display.strip()}
+
+JSON:"""
+    
+    def _get_llm_response_with_validation(self, prompt):
+        """
+        Get LLM response with basic validation.
+        """
+        response = self._get_llm_response(prompt)
+        
+        # Basic validation
+        if not response or len(response.strip()) < 3:
+            return None
+            
+        # Check for obvious error messages
+        error_indicators = ['error', 'cannot', 'unable', 'sorry']
+        if any(indicator in response.lower() for indicator in error_indicators):
+            return None
+            
+        return response
+    
+    def _parse_speaker_array_enhanced(self, response_text, expected_count, attempt):
+        """
+        Enhanced speaker array parsing with error recovery.
+        """
+        # Try standard parsing first
+        speakers = self._parse_speaker_array(response_text, expected_count)
+        if speakers and len(speakers) == expected_count:
+            return speakers
+        
+        # Try alternative parsing methods
+        if attempt > 0:
+            speakers = self._parse_speaker_array_alternative(response_text, expected_count)
+            if speakers:
+                return speakers
+        
+        return speakers
+    
+    def _parse_speaker_array_alternative(self, response_text, expected_count):
+        """
+        Alternative parsing method for malformed responses.
+        """
+        try:
+            # Try to extract lines that look like speaker names
+            lines = response_text.strip().split('\\n')
+            potential_speakers = []
+            
+            for line in lines:
+                line = line.strip()
+                # Skip empty lines and obvious non-speakers
+                if not line or line.startswith('#') or line.startswith('//'):
+                    continue
+                    
+                # Try to extract speaker from various formats
+                if line.startswith('"') and line.endswith('"'):
+                    potential_speakers.append(line[1:-1])
+                elif ': ' in line:
+                    potential_speakers.append(line.split(': ')[0])
+                elif line.replace(',', '').replace('.', '').isalpha():
+                    potential_speakers.append(line.replace(',', '').replace('.', ''))
+            
+            # If we found the right number, return them
+            if len(potential_speakers) == expected_count:
+                return potential_speakers
+            
+        except Exception as e:
+            self.logger.debug(f"Alternative parsing failed: {e}")
+        
+        return None
+    
+    def _validate_and_clean_speakers(self, speakers, text_metadata, numbered_lines=None):
+        """
+        Validate and clean speaker names, including fixing character name association errors.
+        """
+        cleaned_speakers = []
+        known_characters = set()
+        
+        if text_metadata:
+            known_characters = text_metadata.get('potential_character_names', set())
+        
+        for i, speaker in enumerate(speakers):
+            speaker = speaker.strip().strip('"').strip("'")
+            
+            # Filter out obvious metadata
+            if self._is_metadata_speaker(speaker):
+                cleaned_speakers.append("narrator")
+            elif speaker.lower() in ['ambiguous', 'unclear', 'unknown']:
+                cleaned_speakers.append("AMBIGUOUS")
+            else:
+                # Check for character name association errors
+                if numbered_lines and i < len(numbered_lines):
+                    corrected_speaker = self._fix_character_association_error(
+                        speaker, numbered_lines[i], known_characters
+                    )
+                    cleaned_speakers.append(corrected_speaker)
+                else:
+                    cleaned_speakers.append(speaker)
+        
+        return cleaned_speakers
+    
+    def _fix_character_association_error(self, assigned_speaker: str, text_line: str, known_characters: set) -> str:
+        """
+        Detect and fix cases where LLM incorrectly attributed narrative to character based on name presence.
+        
+        Args:
+            assigned_speaker: Speaker assigned by LLM
+            text_line: The actual text content
+            known_characters: Set of known character names
+            
+        Returns:
+            Corrected speaker (may be same as input if no error detected)
+        """
+        if assigned_speaker.lower() in ['narrator', 'ambiguous', 'unfixable']:
+            return assigned_speaker
+            
+        # Only check if assigned speaker is a known character
+        if assigned_speaker not in known_characters:
+            return assigned_speaker
+            
+        text_line = text_line.strip()
+        if not text_line:
+            return assigned_speaker
+            
+        # Extract text content from numbered format if present
+        if re.match(r'^\d+\.\s*', text_line):
+            text_content = re.sub(r'^\d+\.\s*', '', text_line).strip()
+        else:
+            text_content = text_line
+        
+        # Check for narrative indicators that suggest this should be narrator, not character
+        narrative_patterns = [
+            # Action descriptions: "Character + action verb"
+            rf'\\b{re.escape(assigned_speaker)}\\b\\s+(?:walked|ran|moved|stepped|turned|looked|watched|saw|heard|felt|thought|knew|realized|understood|remembered|noticed|observed)',
+            rf'\\b{re.escape(assigned_speaker)}\\b\\s+(?:was|were|had|would|could|should|might|must)\\s+\\w+',
+            
+            # State descriptions: "Character + possessive + state"
+            rf'\\b{re.escape(assigned_speaker)}\'s\\s+(?:blood|heart|mind|eyes|face|body|voice|hand|head)',
+            rf'\\b{re.escape(assigned_speaker)}\'s\\s+(?:expression|feeling|emotion|pain|fear|anger|joy)',
+            
+            # Physical descriptions: "The X affecting Character"
+            rf'(?:the|a|an)\\s+\\w+\\s+(?:was|were)\\s+(?:affecting|hurting|healing|changing|melting|burning)\\s+\\b{re.escape(assigned_speaker)}\\b',
+            
+            # Third person descriptions: "Character shot forward", "Character's blood"
+            rf'\\b{re.escape(assigned_speaker)}\\b\\s+(?:shot|flew|charged|rushed|jumped|fell|collapsed|stood|sat|lay)',
+            rf'\\b(?:the|his|her|their)\\s+\\w+\\s+(?:was|were)\\s+\\w+ing\\s+\\b{re.escape(assigned_speaker)}\\b',
+        ]
+        
+        for pattern in narrative_patterns:
+            if re.search(pattern, text_content, re.IGNORECASE):
+                self.logger.debug(f"Fixed character association error: '{assigned_speaker}' -> 'narrator' for: {text_content[:50]}...")
+                return "narrator"
+        
+        # Check for dialogue indicators that confirm the character is actually speaking
+        dialogue_patterns = [
+            rf'\\b{re.escape(assigned_speaker)}\\b\\s+(?:said|asked|replied|whispered|shouted|muttered|cried|exclaimed|declared|announced)',
+            rf'"[^"]*"[^"]*\\b{re.escape(assigned_speaker)}\\b\\s+(?:said|asked|replied)',
+            rf'\\b{re.escape(assigned_speaker)}\\b\\s*:\\s*["\']',  # Script format
+        ]
+        
+        for pattern in dialogue_patterns:
+            if re.search(pattern, text_content, re.IGNORECASE):
+                # This confirms character is speaking, keep original assignment
+                return assigned_speaker
+        
+        # Check if text contains quoted speech without attribution
+        if '"' in text_content or '"' in text_content or '"' in text_content:
+            # Has dialogue markers but no clear attribution, could be character speaking
+            return assigned_speaker
+        
+        # If character name appears but no clear dialogue indicators, likely narrative
+        if assigned_speaker.lower() in text_content.lower():
+            self.logger.debug(f"Probable narrative about character: '{assigned_speaker}' -> 'narrator' for: {text_content[:50]}...")
+            return "narrator"
+        
+        return assigned_speaker
+    
+    def _pad_speaker_array(self, speakers, expected_count):
+        """
+        Pad speaker array to expected count.
+        """
+        while len(speakers) < expected_count:
+            speakers.append("AMBIGUOUS")
+        
+        # Truncate if too long
+        return speakers[:expected_count]
     
     def _parse_speaker_array(self, response_text, expected_count):
         """
@@ -231,22 +495,73 @@ class LLMOrchestrator:
             
         speaker_lower = speaker_name.lower().strip()
         
-        # Known metadata speakers to filter out
+        # Enhanced metadata speakers to filter out (synchronized with RuleBasedAttributor)
         metadata_speakers = {
-            'chapter', 'prologue', 'epilogue', 'author', 'writer', 'reader',
-            'part', 'section', 'book', 'volume', 'page', 'it', 'this', 'that',
-            'unfixable', 'ambiguous', 'unknown'
+            # Book structure
+            'chapter', 'prologue', 'epilogue', 'part', 'section', 'book', 'volume', 
+            'page', 'appendix', 'index', 'glossary', 'bibliography', 'contents',
+            'table of contents', 'toc', 'preface', 'foreword', 'introduction',
+            'conclusion', 'afterword', 'postscript', 'dedication', 'acknowledgments',
+            
+            # Author/editorial
+            'author', 'writer', 'editor', 'publisher', 'translator', 'narrator',
+            'reader', 'storyteller', "author's note", "author's words", 
+            'author note', 'author words', 'editorial', "editor's note",
+            "publisher's note", "translator's note", 'note', 'notes',
+            
+            # Status/quality markers
+            'unfixable', 'ambiguous', 'unknown', 'unclear', 'missing', 'error',
+            'corrupted', 'incomplete', 'damaged', 'illegible',
+            
+            # Common non-character words
+            'it', 'this', 'that', 'he', 'she', 'they', 'we', 'you', 'i',
+            'here', 'there', 'now', 'then', 'when', 'where', 'what', 'who',
+            'how', 'why', 'the', 'and', 'or', 'but', 'if', 'so',
+            
+            # Document artifacts
+            'copyright', 'isbn', 'publication', 'edition', 'version', 'draft',
+            'manuscript', 'document', 'file', 'text', 'content',
+            
+            # Formatting artifacts
+            'bold', 'italic', 'underline', 'highlight', 'quote', 'citation',
+            'footnote', 'endnote', 'reference', 'link', 'url', 'http', 'www'
         }
         
         if speaker_lower in metadata_speakers:
             return True
             
-        # Metadata patterns
+        # Enhanced metadata patterns (synchronized with RuleBasedAttributor)
         metadata_patterns = [
-            r'^chapter\s+\d+', r'^chapter\s+[ivx]+', r'^ch\.\s*\d+',
-            r'^epilogue', r'^prologue', r'^part\s+\d+', r'^book\s+\d+',
-            r'^volume\s+\d+', r'^section\s+\d+', r'^author:', r'^writer:',
-            r'^\d+\.\s*$', r'^[ivx]+\.\s*$'
+                # Chapter patterns
+                r'^chapter\s+\d+', r'^chapter\s+[ivx]+', r'^ch\.\s*\d+', r'^chap\.\s*\d+',
+                r'^chapter\s+\w+', r'chapter\s+\d+:', r'chapter\s+[ivx]+:',
+                
+                # Book structure patterns
+                r'^epilogue', r'^prologue', r'^part\s+\d+', r'^book\s+\d+',
+                r'^volume\s+\d+', r'^section\s+\d+', r'^appendix', r'^index',
+                r'^preface', r'^foreword', r'^introduction', r'^conclusion',
+                r'^afterword', r'^postscript', r'^dedication', r'^acknowledgments',
+                
+                # Author/editorial patterns
+                r'^author:', r'^writer:', r'^editor:', r'^publisher:',
+                r'^translator:', r'^note:', r'^notes:', r'^editorial:',
+                r"author'?s?\s+note", r"author'?s?\s+words", r"editor'?s?\s+note",
+                r"publisher'?s?\s+note", r"translator'?s?\s+note",
+                
+                # Numbering patterns
+                r'^\d+\.\s*$', r'^[ivx]+\.\s*$', r'^\d+\s*$', r'^[ivx]+\s*$',
+                r'^\(\d+\)$', r'^\([ivx]+\)$', r'^\[\d+\]$', r'^\[[ivx]+\]$',
+                
+                # Copyright and publication patterns
+                r'^copyright', r'^©', r'^isbn', r'^publication', r'^edition',
+                r'^version', r'^draft', r'^manuscript', r'^document',
+                
+                # Common metadata indicators
+                r'^table\s+of\s+contents', r'^toc\s*:', r'^contents\s*:',
+                r'^bibliography', r'^glossary', r'^references',
+                
+                # Page/location patterns
+                r'^page\s+\d+', r'^p\.\s*\d+', r'^\d+\s*-\s*\d+$'
         ]
         
         for pattern in metadata_patterns:

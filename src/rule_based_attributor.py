@@ -22,12 +22,23 @@ class RuleBasedAttributor:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
         
-        # Common dialogue tags for speaker attribution
+        # Expanded dialogue tags for speaker attribution
         self.dialogue_tags = [
+            # Speaking verbs
             'said', 'replied', 'asked', 'whispered', 'shouted', 'muttered', 
-            'cried', 'exclaimed', 'sighed', 'laughed', 'nodded', 'smiled', 
-            'thought', 'continued', 'added', 'answered', 'responded',
-            'declared', 'announced', 'stated', 'mentioned', 'noted'
+            'cried', 'exclaimed', 'sighed', 'laughed', 'continued', 'added', 
+            'answered', 'responded', 'declared', 'announced', 'stated', 
+            'mentioned', 'noted', 'called', 'yelled', 'screamed', 'gasped',
+            'breathed', 'hissed', 'growled', 'barked', 'snapped', 'drawled',
+            'chuckled', 'giggled', 'sobbed', 'wailed', 'moaned', 'groaned',
+            
+            # Action verbs that often accompany dialogue
+            'nodded', 'smiled', 'grinned', 'frowned', 'shrugged', 'gestured',
+            'pointed', 'waved', 'turned', 'looked', 'glanced', 'stared',
+            
+            # Thinking/internal verbs
+            'thought', 'wondered', 'realized', 'remembered', 'considered',
+            'decided', 'concluded', 'assumed', 'believed', 'knew', 'felt'
         ]
         
         # High-confidence patterns for script format
@@ -36,7 +47,7 @@ class RuleBasedAttributor:
             r'^([A-Z][A-Z0-9_\s]+):\s*(.*)',  # ALL_CAPS_NAME: dialogue
         ]
         
-        # Dialogue attribution patterns
+        # Comprehensive dialogue attribution patterns
         self.dialogue_attribution_patterns = [
             # "dialogue," speaker said/asked/etc
             r'"([^"]*),"\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\s+(' + '|'.join(self.dialogue_tags) + r')',
@@ -46,21 +57,86 @@ class RuleBasedAttributor:
             r'"([^"]*)[!?]\s*"\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\s+(' + '|'.join(self.dialogue_tags) + r')',
             # speaker said/asked, "dialogue"
             r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\s+(' + '|'.join(self.dialogue_tags) + r'),\s*"([^"]*)"',
+            
+            # Enhanced patterns for better coverage
+            # "dialogue," said speaker
+            r'"([^"]*),"\s+(' + '|'.join(self.dialogue_tags) + r')\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)',
+            # speaker's dialogue patterns
+            r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\s*[\':s]+\s*"([^"]*)"',
+            # Character action followed by dialogue
+            r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\s+(' + '|'.join(self.dialogue_tags[:10]) + r')[^.]*\.\s*"([^"]*)"',
+            # "dialogue" - speaker pattern
+            r'"([^"]*)",\s*[-–—]\s*([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)',
+            # em-dash dialogue: —Dialogue, speaker said
+            r'[–—]\s*"?([^"]*?)"?,?\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\s+(' + '|'.join(self.dialogue_tags) + r')',
+            # Curly quote patterns
+            r'([“"\'‘])(.*?)([”"\'’]),\s*([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\s+(' + '|'.join(self.dialogue_tags) + r')'
         ]
         
-        # Metadata speakers to filter out (should never be actual character speakers)
+        # Enhanced metadata speakers to filter out (should never be actual character speakers)
         self.metadata_speakers = {
-            'chapter', 'prologue', 'epilogue', 'author', 'writer', 'reader', 'narrator',
-            'part', 'section', 'book', 'volume', 'page', 'it', 'this', 'that',
-            'unfixable', 'ambiguous', 'unknown'
+            # Book structure
+            'chapter', 'prologue', 'epilogue', 'part', 'section', 'book', 'volume', 
+            'page', 'appendix', 'index', 'glossary', 'bibliography', 'contents',
+            'table of contents', 'toc', 'preface', 'foreword', 'introduction',
+            'conclusion', 'afterword', 'postscript', 'dedication', 'acknowledgments',
+            
+            # Author/editorial
+            'author', 'writer', 'editor', 'publisher', 'translator', 'narrator',
+            'reader', 'storyteller', 'author\'s note', 'author\'s words', 
+            'author note', 'author words', 'editorial', 'editor\'s note',
+            'publisher\'s note', 'translator\'s note', 'note', 'notes',
+            
+            # Status/quality markers
+            'unfixable', 'ambiguous', 'unknown', 'unclear', 'missing', 'eror',
+            'corrupted', 'incomplete', 'damaged', 'illegible',
+            
+            # Common non-character words
+            'it', 'this', 'that', 'he', 'she', 'they', 'we', 'you', 'i',
+            'here', 'there', 'now', 'then', 'when', 'where', 'what', 'who',
+            'how', 'why', 'the', 'and', 'or', 'but', 'if', 'so',
+            
+            # Document artifacts
+            'copyright', 'isbn', 'publication', 'edition', 'version', 'draft',
+            'manuscript', 'document', 'file', 'text', 'content',
+            
+            # Formatting artifacts
+            'bold', 'italic', 'underline', 'highlight', 'quote', 'citation',
+            'footnote', 'endnote', 'reference', 'link', 'url', 'http', 'www'
         }
         
-        # Chapter/title patterns to detect and filter
+        # Enhanced metadata patterns to detect and filter
         self.metadata_patterns = [
-            r'^chapter\s+\d+', r'^chapter\s+[ivx]+', r'^ch\.\s*\d+',
+            # Chapter patterns
+            r'^chapter\s+\d+', r'^chapter\s+[ivx]+', r'^ch\.\s*\d+', r'^chap\.\s*\d+',
+            r'^chapter\s+\w+', r'chapter\s+\d+:', r'chapter\s+[ivx]+:',
+            
+            # Book structure patterns
             r'^epilogue', r'^prologue', r'^part\s+\d+', r'^book\s+\d+',
-            r'^volume\s+\d+', r'^section\s+\d+', r'^author:', r'^writer:',
-            r'^\d+\.\s*$', r'^[ivx]+\.\s*$'
+            r'^volume\s+\d+', r'^section\s+\d+', r'^appendix', r'^index',
+            r'^preface', r'^foreword', r'^introduction', r'^conclusion',
+            r'^afterword', r'^postscript', r'^dedication', r'^acknowledgments',
+            
+            # Author/editorial patterns
+            r'^author:', r'^writer:', r'^editor:', r'^publisher:',
+            r'^translator:', r'^note:', r'^notes:', r'^editorial:',
+            r'author\'?s?\s+note', r'author\'?s?\s+words', r'editor\'?s?\s+note',
+            r'publisher\'?s?\s+note', r'translator\'?s?\s+note',
+            
+            # Numbering patterns
+            r'^\d+\.\s*$', r'^[ivx]+\.\s*$', r'^\d+\s*$', r'^[ivx]+\s*$',
+            r'^\(\d+\)$', r'^\([ivx]+\)$', r'^\[\d+\]$', r'^\[[ivx]+\]$',
+            
+            # Copyright and publication patterns
+            r'^copyright', r'^©', r'^isbn', r'^publication', r'^edition',
+            r'^version', r'^draft', r'^manuscript', r'^document',
+            
+            # Common metadata indicators
+            r'^table\s+of\s+contents', r'^toc\s*:', r'^contents\s*:',
+            r'^bibliography', r'^glossary', r'^references',
+            
+            # Page/location patterns
+            r'^page\s+\d+', r'^p\.\s*\d+', r'^\d+\s*-\s*\d+$'
         ]
     
     def process_lines(self, numbered_lines: List[Dict[str, Any]], text_metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -145,7 +221,27 @@ class RuleBasedAttributor:
         if speaker:
             return speaker, confidence
             
-        # Method 4: Narrative vs dialogue classification
+        # Method 4: Action-based dialogue attribution
+        speaker, confidence = self._attribute_action_based_dialogue(text, known_character_names)
+        if speaker:
+            return speaker, confidence
+        
+        # Method 5: Internal thought attribution  
+        speaker, confidence = self._attribute_internal_thoughts(text, known_character_names)
+        if speaker:
+            return speaker, confidence
+            
+        # Method 6: Possessive dialogue attribution
+        speaker, confidence = self._attribute_possessive_dialogue(text, known_character_names)
+        if speaker:
+            return speaker, confidence
+            
+        # Method 7: Enhanced character name proximity
+        speaker, confidence = self._attribute_enhanced_proximity(text, known_character_names)
+        if speaker:
+            return speaker, confidence
+            
+        # Method 8: Narrative vs dialogue classification
         if self._is_likely_dialogue(text):
             return "AMBIGUOUS", 0.3  # Mark as dialogue but uncertain speaker
         else:
@@ -238,6 +334,126 @@ class RuleBasedAttributor:
             confidence = min(best_match_score / 100.0, 0.6)  # Cap confidence for this method
             return best_match_name, confidence
             
+        return None, 0.0
+    
+    def _attribute_action_based_dialogue(self, text: str, known_character_names: set) -> Tuple[str, float]:
+        """
+        Attribute speaker based on action descriptions followed by dialogue.
+        Pattern: "Character did something. 'Dialogue.'"
+        """
+        # Look for character name followed by action, then dialogue
+        action_dialogue_patterns = [
+            r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\s+(' + '|'.join(self.dialogue_tags[:15]) + r')[^.]*?\.\s*[\"'""']([^\"'""']*)[\"'""']',
+            r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\s+(?:turned|looked|glanced|stepped|moved|walked)[^.]*?\.\s*[\"'""']([^\"'""']*)[\"'""']',
+            r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\s+(?:paused|hesitated|waited)[^.]*?\.\s*[\"'""']([^\"'""']*)[\"'""']'
+        ]
+        
+        for pattern in action_dialogue_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                potential_speaker = match.group(1).strip()
+                
+                # Validate against known characters
+                if potential_speaker in known_character_names:
+                    return potential_speaker, 0.85
+                elif known_character_names:
+                    best_match = process.extractOne(potential_speaker, list(known_character_names), scorer=fuzz.token_set_ratio)
+                    if best_match and best_match[1] > 80:
+                        return best_match[0], 0.75
+                
+                # Accept if it looks like a proper name
+                if self._is_likely_character_name(potential_speaker):
+                    return potential_speaker, 0.65
+        
+        return None, 0.0
+    
+    def _attribute_internal_thoughts(self, text: str, known_character_names: set) -> Tuple[str, float]:
+        """
+        Attribute speaker based on internal thought patterns.
+        Pattern: "Character thought/wondered/realized..."
+        """
+        thought_patterns = [
+            r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\s+(?:thought|wondered|realized|remembered|considered|decided|knew|felt|believed)',
+            r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\s+(?:was thinking|had thought|could think|would think)',
+            r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\'s\s+(?:mind|thoughts|brain)'
+        ]
+        
+        for pattern in thought_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                potential_speaker = match.group(1).strip()
+                
+                # Validate against known characters
+                if potential_speaker in known_character_names:
+                    return potential_speaker, 0.80
+                elif known_character_names:
+                    best_match = process.extractOne(potential_speaker, list(known_character_names), scorer=fuzz.token_set_ratio)
+                    if best_match and best_match[1] > 75:
+                        return best_match[0], 0.70
+                
+                # Accept if it looks like a proper name
+                if self._is_likely_character_name(potential_speaker):
+                    return potential_speaker, 0.60
+        
+        return None, 0.0
+    
+    def _attribute_possessive_dialogue(self, text: str, known_character_names: set) -> Tuple[str, float]:
+        """
+        Attribute speaker based on possessive dialogue patterns.
+        Pattern: "Character's voice", "John's words", etc.
+        """
+        possessive_patterns = [
+            r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\'s\s+(?:voice|words|response|reply|answer)',
+            r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\'s\s+(?:question|statement|comment|remark)'
+        ]
+        
+        for pattern in possessive_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                potential_speaker = match.group(1).strip()
+                
+                # Only accept if it's a known character
+                if potential_speaker in known_character_names:
+                    return potential_speaker, 0.75
+                elif known_character_names:
+                    best_match = process.extractOne(potential_speaker, list(known_character_names), scorer=fuzz.token_set_ratio)
+                    if best_match and best_match[1] > 80:
+                        return best_match[0], 0.70
+        
+        return None, 0.0
+    
+    def _attribute_enhanced_proximity(self, text: str, known_character_names: set) -> Tuple[str, float]:
+        """
+        Enhanced character name proximity detection with better scoring.
+        """
+        if not self._is_likely_dialogue(text) or not known_character_names:
+            return None, 0.0
+        
+        best_matches = []
+        
+        for char_name in known_character_names:
+            # Check exact name matches
+            if char_name.lower() in text.lower():
+                best_matches.append((char_name, 0.85))
+                continue
+            
+            # Check partial matches (first name, last name)
+            name_parts = char_name.split()
+            for part in name_parts:
+                if len(part) > 2 and part.lower() in text.lower():
+                    best_matches.append((char_name, 0.70))
+                    break
+            
+            # Fuzzy matching for typos/variations
+            similarity = fuzz.partial_ratio(char_name.lower(), text.lower())
+            if similarity > 85:
+                best_matches.append((char_name, similarity / 100.0 * 0.6))
+        
+        if best_matches:
+            # Return the best match
+            best_match = max(best_matches, key=lambda x: x[1])
+            return best_match[0], best_match[1]
+        
         return None, 0.0
     
     def _is_likely_dialogue(self, text: str) -> bool:

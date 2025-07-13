@@ -100,13 +100,13 @@ class TextPreprocessor:
         if re.search(r'^(?:–|\s|-)?\s*[A-Z][a-zA-Z0-9_\s]*:\s*', text, re.MULTILINE):
             metadata['dialogue_markers'].add('script_format')
 
-        # 3. Scene Break Detection
-        # Multiple consecutive newlines (e.g., 3 or more)
-        for match in re.finditer(r'\n{3,}', text):
-            metadata['scene_breaks'].append(match.start())
-        # Specific patterns like *** or ###
-        for match in re.finditer(r'\*{3,}|#{3,}', text):
-            metadata['scene_breaks'].append(match.start())
+        # 3. Enhanced Scene Break Detection
+        scene_breaks = self._detect_scene_breaks(text)
+        metadata['scene_breaks'] = scene_breaks
+        
+        # 3.5. Document Structure Analysis
+        document_structure = self._analyze_document_structure(text)
+        metadata['document_structure'] = document_structure
 
         # 4. Enhanced Character Profiling
         character_profiles = self._extract_character_profiles(text, doc)
@@ -324,3 +324,213 @@ class TextPreprocessor:
                 return True
         
         return False
+    
+    def _detect_scene_breaks(self, text: str) -> List[int]:
+        """
+        Detect scene breaks and chapter boundaries in the text.
+        
+        Returns:
+            List of character indices where scene breaks occur
+        """
+        scene_breaks = []
+        
+        # Scene break patterns to detect
+        scene_break_patterns = [
+            # Chapter markers
+            r'^\s*(?:CHAPTER|Chapter|chapter)\s+(?:\d+|[IVXLCDM]+|[A-Z]+)\s*$',
+            r'^\s*(?:\d+|[IVXLCDM]+)\.\s*$',
+            
+            # Section breaks
+            r'^\s*\*\s*\*\s*\*\s*$',
+            r'^\s*-{3,}\s*$',
+            r'^\s*={3,}\s*$',
+            r'^\s*~{3,}\s*$',
+            
+            # Time/location transitions
+            r'^\s*(?:Later|Meanwhile|Elsewhere|The next day|Hours later|Days later|Weeks later)\s*[.:]?\s*$',
+            r'^\s*(?:At|In)\s+(?:the|a)\s+\w+[,.]?\s*$',
+            
+            # Perspective changes
+            r'^\s*(?:From|In)\s+\w+\'s\s+(?:perspective|point of view|POV)\s*[.:]?\s*$',
+            
+            # Dialog scene markers
+            r'^\s*\"\s*\*\s*\*\s*\*\s*\"\s*$',
+            
+            # Multiple blank lines (paragraph breaks that might indicate scenes)
+            r'\n\s*\n\s*\n',
+        ]
+        
+        # Find scene breaks
+        for pattern in scene_break_patterns:
+            for match in re.finditer(pattern, text, re.MULTILINE | re.IGNORECASE):
+                scene_breaks.append(match.start())
+        
+        # Detect implicit scene breaks based on context changes
+        lines = text.split('\n')
+        current_pos = 0
+        
+        for i, line in enumerate(lines):
+            line_stripped = line.strip()
+            
+            # Skip empty lines
+            if not line_stripped:
+                current_pos += len(line) + 1  # +1 for newline
+                continue
+            
+            # Check for major context shifts that suggest scene breaks
+            context_shift_indicators = [
+                # Time jumps
+                r'\b(?:suddenly|meanwhile|later|after|before|when|then)\b',
+                # Location changes  
+                r'\b(?:outside|inside|upstairs|downstairs|nearby|elsewhere|back|away)\b',
+                # Character introductions
+                r'\b(?:entered|appeared|arrived|left|departed|returned)\b',
+                # Emotional/tonal shifts
+                r'\b(?:however|but|yet|still|though|although|nevertheless)\b'
+            ]
+            
+            # Look for dramatic paragraph changes (length, style)
+            if i > 0 and i < len(lines) - 1:
+                prev_line = lines[i-1].strip()
+                next_line = lines[i+1].strip() if i+1 < len(lines) else ""
+                
+                # Detect sudden style changes (very short line between longer paragraphs)
+                if (len(line_stripped) < 30 and 
+                    len(prev_line) > 100 and 
+                    len(next_line) > 100):
+                    scene_breaks.append(current_pos)
+            
+            current_pos += len(line) + 1
+        
+        # Remove duplicates and sort
+        scene_breaks = sorted(list(set(scene_breaks)))
+        
+        # Filter out scene breaks that are too close together (within 100 characters)
+        filtered_breaks = []
+        for break_pos in scene_breaks:
+            if not filtered_breaks or break_pos - filtered_breaks[-1] > 100:
+                filtered_breaks.append(break_pos)
+        
+        return filtered_breaks
+    
+    def _analyze_document_structure(self, text: str) -> Dict[str, Any]:
+        """
+        Analyze the overall document structure for better processing.
+        
+        Returns:
+            Dictionary containing document structure analysis
+        """
+        structure = {
+            'total_length': len(text),
+            'line_count': len(text.split('\n')),
+            'paragraph_count': 0,
+            'dialogue_density': 0.0,
+            'narrative_density': 0.0,
+            'average_paragraph_length': 0,
+            'has_chapters': False,
+            'chapter_markers': [],
+            'dialogue_style': 'mixed',  # 'quoted', 'dashed', 'mixed'
+            'narrative_perspective': 'unknown',  # 'first', 'third', 'mixed'
+            'estimated_genre': 'unknown',  # 'fiction', 'nonfiction', 'script', 'chat'
+            'complexity_score': 0.0  # 0-1 scale for processing complexity
+        }
+        
+        # Split into paragraphs (non-empty lines or double newlines)
+        paragraphs = []
+        current_paragraph = []
+        
+        for line in text.split('\n'):
+            line_stripped = line.strip()
+            if line_stripped:
+                current_paragraph.append(line_stripped)
+            else:
+                if current_paragraph:
+                    paragraphs.append(' '.join(current_paragraph))
+                    current_paragraph = []
+        
+        # Add final paragraph if exists
+        if current_paragraph:
+            paragraphs.append(' '.join(current_paragraph))
+        
+        structure['paragraph_count'] = len(paragraphs)
+        
+        if paragraphs:
+            structure['average_paragraph_length'] = sum(len(p) for p in paragraphs) / len(paragraphs)
+        
+        # Analyze dialogue vs narrative content
+        dialogue_chars = 0
+        narrative_chars = 0
+        total_chars = len(text)
+        
+        # Count characters in dialogue vs narrative
+        dialogue_patterns = [r'"[^"]*"', r'"[^"]*"', r'"[^"]*"', r'—[^—\n]*']
+        
+        for pattern in dialogue_patterns:
+            for match in re.finditer(pattern, text):
+                dialogue_chars += len(match.group())
+        
+        narrative_chars = total_chars - dialogue_chars
+        
+        if total_chars > 0:
+            structure['dialogue_density'] = dialogue_chars / total_chars
+            structure['narrative_density'] = narrative_chars / total_chars
+        
+        # Detect chapter markers
+        chapter_patterns = [
+            r'(?:CHAPTER|Chapter|chapter)\s+(?:\d+|[IVXLCDM]+|[A-Z]+)',
+            r'^\s*(?:\d+|[IVXLCDM]+)\.\s*(?:[A-Z][^.!?]*)?$'
+        ]
+        
+        for pattern in chapter_patterns:
+            matches = list(re.finditer(pattern, text, re.MULTILINE))
+            if matches:
+                structure['has_chapters'] = True
+                structure['chapter_markers'].extend([m.group() for m in matches])
+        
+        # Determine dialogue style
+        quote_count = text.count('"') + text.count('"') + text.count('"')
+        dash_count = text.count('—') + text.count('–')
+        
+        if quote_count > dash_count * 2:
+            structure['dialogue_style'] = 'quoted'
+        elif dash_count > quote_count * 2:
+            structure['dialogue_style'] = 'dashed'
+        else:
+            structure['dialogue_style'] = 'mixed'
+        
+        # Detect narrative perspective
+        first_person_indicators = len(re.findall(r'\b(?:I|my|me|myself|we|us|our|ourselves)\b', text, re.IGNORECASE))
+        third_person_indicators = len(re.findall(r'\b(?:he|she|they|him|her|them|his|hers|their)\b', text, re.IGNORECASE))
+        
+        if first_person_indicators > third_person_indicators * 1.5:
+            structure['narrative_perspective'] = 'first'
+        elif third_person_indicators > first_person_indicators * 1.5:
+            structure['narrative_perspective'] = 'third'
+        else:
+            structure['narrative_perspective'] = 'mixed'
+        
+        # Estimate genre based on patterns
+        script_indicators = len(re.findall(r'^\s*[A-Z][A-Z\s]+:\s*', text, re.MULTILINE))
+        chat_indicators = len(re.findall(r'^\s*\[\d{1,2}:\d{2}\]|\<[^>]+\>', text, re.MULTILINE))
+        
+        if script_indicators > structure['line_count'] * 0.1:
+            structure['estimated_genre'] = 'script'
+        elif chat_indicators > 10:
+            structure['estimated_genre'] = 'chat'
+        elif structure['dialogue_density'] > 0.4:
+            structure['estimated_genre'] = 'fiction'
+        else:
+            structure['estimated_genre'] = 'nonfiction'
+        
+        # Calculate complexity score (0-1 scale)
+        complexity_factors = [
+            structure['dialogue_density'],  # More dialogue = more complex
+            min(1.0, len(structure['chapter_markers']) / 10),  # Chapters add complexity
+            min(1.0, structure['paragraph_count'] / 100),  # More paragraphs = more complex
+            1.0 if structure['dialogue_style'] == 'mixed' else 0.5,  # Mixed styles = complex
+            1.0 if structure['narrative_perspective'] == 'mixed' else 0.3,  # Mixed perspective = complex
+        ]
+        
+        structure['complexity_score'] = sum(complexity_factors) / len(complexity_factors)
+        
+        return structure

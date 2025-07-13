@@ -13,6 +13,8 @@ from .refiner import OutputRefiner
 from .contextual_refiner import ContextualRefiner
 from .deterministic_segmenter import DeterministicSegmenter
 from .rule_based_attributor import RuleBasedAttributor
+from .unfixable_recovery import UnfixableRecoverySystem
+from .output_formatter import OutputFormatter
 
 class TextStructurer:
     """Structures raw text into a dialogue-focused JSON format using an LLM."""
@@ -41,6 +43,8 @@ class TextStructurer:
             self.validator = SimplifiedValidator()  # Use new simplified validator
             self.refiner = OutputRefiner(self.llm_orchestrator, self.validator)
             self.contextual_refiner = ContextualRefiner(self.llm_orchestrator)
+            self.unfixable_recovery = UnfixableRecoverySystem()
+            self.output_formatter = OutputFormatter()
             self.logger.info("TextStructurer initialization completed successfully")
         except Exception as e:
             self.logger.error(f"Failed to initialize TextStructurer: {e}", exc_info=True)
@@ -196,30 +200,67 @@ class TextStructurer:
             if refined_count > 0:
                 print(f"Contextual refinement resolved {refined_count} AMBIGUOUS speakers")
             
+            # Run UNFIXABLE recovery system
+            print("Running UNFIXABLE recovery system...")
+            unfixable_before = sum(1 for seg in contextually_refined_segments if seg.get('speaker') == 'UNFIXABLE')
+            
+            if unfixable_before > 0:
+                recovered_segments = self.unfixable_recovery.recover_unfixable_segments(contextually_refined_segments, text_metadata)
+                unfixable_after = sum(1 for seg in recovered_segments if seg.get('speaker') == 'UNFIXABLE')
+                recovered_count = unfixable_before - unfixable_after
+                
+                if recovered_count > 0:
+                    print(f"UNFIXABLE recovery resolved {recovered_count} UNFIXABLE speakers")
+                else:
+                    print("No UNFIXABLE speakers were recovered")
+                    
+                contextually_refined_segments = recovered_segments
+            else:
+                print("No UNFIXABLE segments found for recovery")
+            
             # Re-add chunk indices for compatibility with old validator
             contextually_refined_data = [(seg, validated_data[i][1]) for i, seg in enumerate(contextually_refined_segments)]
             
+            # Run final validation after UNFIXABLE recovery to get updated quality score
+            final_validated_data, updated_quality_report = self.validator.validate(contextually_refined_data, text_content, text_metadata)
+            print(f"Quality after UNFIXABLE recovery: {updated_quality_report['quality_score']:.2f}% "
+                  f"({updated_quality_report['error_analysis']['total_errors']} errors, "
+                  f"{updated_quality_report['attribution_metrics']['unfixable_segments']} unfixable)")
+            
+            # Use updated quality report for decision making
+            current_quality_score = updated_quality_report['quality_score']
+            
             # Run traditional refinement if quality is still below threshold
-            if quality_report['quality_score'] < settings.REFINEMENT_QUALITY_THRESHOLD:
+            if current_quality_score < settings.REFINEMENT_QUALITY_THRESHOLD:
                 print("Running additional traditional refinement...")
-                refined_data, final_quality_report = self.refiner.refine(contextually_refined_data, text_content, chunks, text_metadata)
+                refined_data, final_quality_report = self.refiner.refine(final_validated_data, text_content, chunks, text_metadata)
                 print(f"Final quality score: {final_quality_report['quality_score']:.2f}% ({final_quality_report['error_count']} errors)")
                 # Extract just the segments without chunk indices for return
                 final_segments = [segment for segment, chunk_idx in refined_data]
             else:
-                print("Quality acceptable after contextual refinement.")
+                print(f"Quality acceptable after UNFIXABLE recovery ({current_quality_score:.1f}%).")
                 # Extract just the segments without chunk indices for return
-                final_segments = [segment for segment, chunk_idx in contextually_refined_data]
+                final_segments = [segment for segment, chunk_idx in final_validated_data]
                 
         except Exception as e:
             print(f"Warning: Validation/refinement failed: {e}")
             print("Returning unvalidated results...")
             final_segments = all_structured_segments
 
+        # Apply final output formatting
+        print("Applying output formatting and cleanup...")
+        formatted_segments = self.output_formatter.format_output(final_segments, preserve_metadata=True)
+        
+        # Log formatting results
+        original_count = len(final_segments)
+        formatted_count = len(formatted_segments)
+        if formatted_count != original_count:
+            print(f"Output formatting: {original_count} -> {formatted_count} segments (removed {original_count - formatted_count} empty)")
+
         end_time = time.time()
         print(f"Text structuring completed in {end_time - start_time:.2f} seconds.")
 
-        return final_segments
+        return formatted_segments
 
     def _fallback_text_splitting(self, text):
         """Fallback method for splitting text when LLM fails."""

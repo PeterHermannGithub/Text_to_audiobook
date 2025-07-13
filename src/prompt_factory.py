@@ -83,42 +83,58 @@ class PromptFactory:
         
         num_lines = len(numbered_lines)
         
-        return f"""You are a literary speaker classification specialist. Below are {num_lines} numbered lines of text. Your task is to identify the speaker for each line and return a JSON array with exactly {num_lines} speaker names.
+        return f"""TASK: Identify the speaker for each numbered line below.
 
-CRITICAL RULES:
-1. Output MUST be a JSON array with exactly {num_lines} items
-2. Each array item must be a speaker name (string)
-3. Your response MUST contain ONLY the JSON array - no explanations
-4. Do NOT modify or segment the text - only classify speakers
+RULES:
+1. Return ONLY a JSON array with exactly {num_lines} speaker names
+2. Use these speaker types:
+   - "narrator" for descriptive/narrative text
+   - Character names for dialogue (e.g. "John", "Sarah")
+   - "AMBIGUOUS" if unclear who is speaking{character_context}{format_context}
 
-SPEAKER CLASSIFICATION GUIDELINES:
-- For narrative text: Use "narrator"
-- For dialogue with clear attribution: Use the character's name
-- For script format (Name: speech): Use the character's name
-- When uncertain about speaker: Use "AMBIGUOUS"
-- Use exact character names when possible{character_context}{format_context}{dialogue_context}
+CRITICAL DISTINCTION:
+- If a line DESCRIBES a character's actions/state → "narrator"
+- If a line contains words SPOKEN by a character → character name
+- Character name in text ≠ character speaking!
 
 EXAMPLES:
 
-INPUT LINES:
-1. The old castle loomed before them.
-2. "We have to go in," Sarah whispered.
-3. JOHN: I can't believe this.
+[INPUT]
+1. The old castle stood before them.
+2. "Let's go inside," Sarah said.
+3. John nodded in agreement.
+[OUTPUT] ["narrator", "Sarah", "narrator"]
 
-OUTPUT: ["narrator", "Sarah", "John"]
+[INPUT]
+1. JOHN: I can't believe this.
+2. "What do you mean?" 
+3. The silence stretched between them.
+[OUTPUT] ["John", "AMBIGUOUS", "narrator"]
 
-INPUT LINES:
-1. "Hello there," John said with a smile.
-2. Mary looked up from her book.
-3. "I'm doing well, thank you."
+[INPUT]
+1. "Hello there," John said.
+2. Mary smiled back at him.
+3. "How are you today?"
+[OUTPUT] ["John", "narrator", "AMBIGUOUS"]
 
-OUTPUT: ["John", "narrator", "AMBIGUOUS"]
+[INPUT - CHARACTER NAME vs SPEAKER EXAMPLES]
+1. John walked toward the door.
+2. John's blood was boiling with anger.
+3. "I'm ready," John said.
+4. John shot forward like a meteor.
+[OUTPUT] ["narrator", "narrator", "John", "narrator"]
 
-Now classify the speakers for these {num_lines} lines:
+[INPUT - MIXED CONTENT EXAMPLES]
+1. [You dare...!]
+2. "Next."
+3. The magic power was affecting John.
+[OUTPUT] ["AMBIGUOUS", "AMBIGUOUS", "narrator"]
+
+NOW CLASSIFY THESE {num_lines} LINES:
 
 {numbered_display.strip()}
 
-Return exactly {num_lines} speaker names as a JSON array:"""
+JSON ARRAY:"""
 
     def create_json_correction_prompt(self, malformed_json_text):
         """
