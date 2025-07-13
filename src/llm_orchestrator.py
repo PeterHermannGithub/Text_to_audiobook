@@ -4,6 +4,7 @@ import requests
 import os
 import re
 import logging
+import hashlib
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 import google.api_core.exceptions
 import google.generativeai as genai
@@ -18,6 +19,12 @@ class LLMOrchestrator:
         self.log_dir = os.path.join(os.getcwd(), settings.LOG_DIR)
         self.prompt_factory = PromptFactory()
         self.logger = logging.getLogger(__name__)
+        
+        # Initialize debug logger if enabled
+        self.debug_logger = None
+        self._debug_counter = 0
+        if settings.LLM_DEBUG_LOGGING:
+            self._setup_debug_logger()
 
         if self.engine == 'gcp':
             if not config.get('project_id') or not config.get('location'):
@@ -83,13 +90,20 @@ class LLMOrchestrator:
         
         return []
     
-    def get_speaker_classifications(self, numbered_lines, text_metadata=None):
+    def get_speaker_classifications(self, numbered_lines, text_metadata=None, context_hint=None):
         """
-        Gets speaker classifications for pre-segmented lines with enhanced error handling.
+        ENHANCED: Gets speaker classifications with sophisticated retry/repair loop.
+        
+        This method implements a 4-level progressive fallback system:
+        1. Retry with error-corrected prompts
+        2. LLM self-correction using previous malformed response
+        3. Rule-based pattern extraction from LLM response
+        4. Smart AMBIGUOUS assignment only when all else fails
         
         Args:
             numbered_lines: List of strings representing pre-segmented text lines
             text_metadata: Metadata containing character names and format info
+            context_hint: Rolling context from previous chunks (new feature)
             
         Returns:
             List of speaker names (strings) matching the input lines
@@ -97,63 +111,58 @@ class LLMOrchestrator:
         if not numbered_lines:
             return []
             
-        max_retries = 3  # Increased from 2
         expected_count = len(numbered_lines)
         
-        # Pre-validate inputs - Use much smaller chunks for better accuracy
-        if expected_count > 8:  # Reduced from 50 to 8 for better LLM performance
+        # Debug: Log the speaker classification attempt
+        classification_context = {
+            'expected_count': expected_count,
+            'has_metadata': text_metadata is not None,
+            'has_context_hint': context_hint is not None,
+            'lines_preview': str(numbered_lines[:3]) + "..." if len(numbered_lines) > 3 else str(numbered_lines)
+        }
+        self._log_llm_processing("speaker_classification_start", numbered_lines, classification_context)
+        
+        # Pre-validate inputs - Use smaller chunks for better accuracy
+        if expected_count > 8:
             self.logger.info(f"Input chunk has {expected_count} lines, splitting into smaller chunks for better accuracy")
-            return self._process_contextual_chunks(numbered_lines, text_metadata)
+            self._log_llm_processing("speaker_classification", numbered_lines, 
+                                     f"Large chunk detected ({expected_count} lines), splitting into smaller chunks")
+            return self._process_contextual_chunks(numbered_lines, text_metadata, context_hint)
         
-        previous_response = None
-        for attempt in range(max_retries + 1):
-            try:
-                # Build classification prompt with attempt-specific optimizations
-                prompt = self._build_optimized_prompt(numbered_lines, text_metadata, attempt, previous_response)
-                
-                # Get LLM response with enhanced validation
-                response_text = self._get_llm_response_with_validation(prompt)
-                
-                # Store response for potential correction in next attempt
-                if response_text:
-                    previous_response = response_text
-                
-                if not response_text or not response_text.strip():
-                    self.logger.warning(f"Attempt {attempt + 1}: Empty response from LLM")
-                    if attempt < max_retries:
-                        continue
-                    else:
-                        return self._fallback_classification(numbered_lines)
-                
-                # Parse speaker array with enhanced error recovery
-                speakers = self._parse_speaker_array_enhanced(response_text, expected_count, attempt)
-                
-                if speakers and len(speakers) == expected_count:
-                    # Validate speaker quality and fix character name association errors
-                    speakers = self._validate_and_clean_speakers(speakers, text_metadata, numbered_lines)
-                    self.logger.debug(f"Successfully classified {len(speakers)} speakers on attempt {attempt + 1}")
-                    return speakers
-                elif attempt < max_retries:
-                    self.logger.warning(f"Attempt {attempt + 1} failed: expected {expected_count}, got {len(speakers) if speakers else 0}")
-                    continue
-                else:
-                    # Last attempt - try partial recovery
-                    if speakers and len(speakers) > 0:
-                        self.logger.warning(f"Partial recovery: got {len(speakers)} speakers, padding to {expected_count}")
-                        return self._pad_speaker_array(speakers, expected_count)
-                    else:
-                        self.logger.error(f"All classification attempts failed, using fallback")
-                        return self._fallback_classification(numbered_lines)
-                    
-            except Exception as e:
-                if attempt < max_retries:
-                    self.logger.warning(f"Classification attempt {attempt + 1} error: {e}")
-                    continue
-                else:
-                    self.logger.error(f"Classification failed after all attempts: {e}")
-                    return self._fallback_classification(numbered_lines)
+        self.logger.debug(f"Starting enhanced speaker classification for {expected_count} lines")
         
-        return self._fallback_classification(numbered_lines)
+        # **LEVEL 1: Enhanced Retry with Progressive Prompt Degradation**
+        speakers = self._attempt_classification_with_retries(numbered_lines, text_metadata, context_hint)
+        if speakers and len(speakers) == expected_count:
+            self.logger.debug(f"Level 1 success: Enhanced retry resolved all {expected_count} speakers")
+            self._log_llm_processing("speaker_classification_complete", numbered_lines, 
+                                     f"Level 1 SUCCESS: {speakers}")
+            return speakers
+        
+        # **LEVEL 2: LLM Self-Correction with Previous Response Analysis**
+        speakers = self._attempt_llm_self_correction(numbered_lines, text_metadata, context_hint)
+        if speakers and len(speakers) == expected_count:
+            self.logger.debug(f"Level 2 success: LLM self-correction resolved all {expected_count} speakers")
+            self._log_llm_processing("speaker_classification_complete", numbered_lines, 
+                                     f"Level 2 SUCCESS: {speakers}")
+            return speakers
+        
+        # **LEVEL 3: Rule-Based Pattern Extraction from LLM Response**
+        speakers = self._attempt_pattern_extraction_from_llm(numbered_lines, text_metadata, context_hint)
+        if speakers and len(speakers) == expected_count:
+            self.logger.debug(f"Level 3 success: Pattern extraction resolved all {expected_count} speakers")
+            self._log_llm_processing("speaker_classification_complete", numbered_lines, 
+                                     f"Level 3 SUCCESS: {speakers}")
+            return speakers
+        
+        # **LEVEL 4: Smart AMBIGUOUS Assignment (Last Resort)**
+        self.logger.warning(f"All enhancement levels failed for {expected_count} lines, using smart fallback")
+        final_result = self._smart_fallback_classification(numbered_lines, text_metadata, context_hint)
+        
+        # Debug: Log the final classification result
+        self._log_llm_processing("speaker_classification_complete", numbered_lines, 
+                                 f"Final result: {final_result} (fallback used)")
+        return final_result
     
     def _process_large_chunk(self, numbered_lines, text_metadata):
         """
@@ -161,13 +170,173 @@ class LLMOrchestrator:
         """
         return self._process_contextual_chunks(numbered_lines, text_metadata)
     
-    def _process_contextual_chunks(self, numbered_lines, text_metadata):
+    def _attempt_classification_with_retries(self, numbered_lines, text_metadata, context_hint):
+        """
+        LEVEL 1: Enhanced retry with progressive prompt degradation and response pre-validation.
+        
+        Args:
+            numbered_lines: List of text lines to classify
+            text_metadata: Character and format metadata
+            context_hint: Rolling context from previous chunks
+            
+        Returns:
+            List of speaker names or None if failed
+        """
+        max_retries = 4  # Increased for more sophisticated retry
+        expected_count = len(numbered_lines)
+        
+        for attempt in range(max_retries):
+            try:
+                # Progressive prompt degradation
+                prompt_complexity = self._get_prompt_complexity_for_attempt(attempt)
+                prompt = self._build_progressive_prompt(numbered_lines, text_metadata, context_hint, prompt_complexity)
+                
+                # Enhanced response with pre-validation
+                response_text = self._get_llm_response_with_prevalidation(prompt, expected_count)
+                
+                if not response_text:
+                    self.logger.debug(f"Level 1, Attempt {attempt + 1}: No valid response from LLM")
+                    continue
+                
+                # Enhanced parsing with attempt-specific strategies
+                speakers = self._parse_with_attempt_strategy(response_text, expected_count, attempt)
+                
+                if speakers and len(speakers) == expected_count:
+                    # Quality validation before returning
+                    if self._validate_speaker_quality(speakers, numbered_lines, text_metadata):
+                        self.logger.debug(f"Level 1 success on attempt {attempt + 1}")
+                        return self._validate_and_clean_speakers(speakers, text_metadata, numbered_lines)
+                
+                self.logger.debug(f"Level 1, Attempt {attempt + 1}: Got {len(speakers) if speakers else 0} speakers, expected {expected_count}")
+                
+            except Exception as e:
+                self.logger.debug(f"Level 1, Attempt {attempt + 1} error: {e}")
+                continue
+        
+        self.logger.debug("Level 1 exhausted all retry attempts")
+        return None
+    
+    def _attempt_llm_self_correction(self, numbered_lines, text_metadata, context_hint):
+        """
+        LEVEL 2: LLM self-correction using previous malformed response analysis.
+        
+        Args:
+            numbered_lines: List of text lines to classify
+            text_metadata: Character and format metadata
+            context_hint: Rolling context from previous chunks
+            
+        Returns:
+            List of speaker names or None if failed
+        """
+        expected_count = len(numbered_lines)
+        
+        # Get a raw response first (even if malformed)
+        try:
+            # Simple prompt to get any response
+            simple_prompt = self._build_simple_classification_prompt(numbered_lines, text_metadata, context_hint)
+            raw_response = self._get_llm_response(simple_prompt)
+            
+            if not raw_response or len(raw_response.strip()) < 5:
+                self.logger.debug("Level 2: No raw response to work with")
+                return None
+            
+            # Analyze what went wrong with the response
+            correction_strategy = self._analyze_response_errors(raw_response, expected_count)
+            
+            # Ask LLM to self-correct with specific guidance
+            correction_prompt = self._build_self_correction_prompt(raw_response, correction_strategy, expected_count)
+            corrected_response = self._get_llm_response(correction_prompt)
+            
+            if corrected_response:
+                speakers = self._parse_speaker_array_enhanced(corrected_response, expected_count, 0)
+                if speakers and len(speakers) == expected_count:
+                    self.logger.debug("Level 2 success: LLM self-correction worked")
+                    return self._validate_and_clean_speakers(speakers, text_metadata, numbered_lines)
+                    
+        except Exception as e:
+            self.logger.debug(f"Level 2 error: {e}")
+        
+        self.logger.debug("Level 2 failed: LLM self-correction unsuccessful")
+        return None
+    
+    def _attempt_pattern_extraction_from_llm(self, numbered_lines, text_metadata, context_hint):
+        """
+        LEVEL 3: Rule-based pattern extraction from LLM response.
+        
+        Args:
+            numbered_lines: List of text lines to classify
+            text_metadata: Character and format metadata
+            context_hint: Rolling context from previous chunks
+            
+        Returns:
+            List of speaker names or None if failed
+        """
+        expected_count = len(numbered_lines)
+        
+        try:
+            # Get any LLM response, even if malformed
+            flexible_prompt = self._build_flexible_classification_prompt(numbered_lines, text_metadata, context_hint)
+            raw_response = self._get_llm_response(flexible_prompt)
+            
+            if not raw_response:
+                self.logger.debug("Level 3: No response to extract patterns from")
+                return None
+            
+            # Extract speakers using multiple pattern recognition strategies
+            speakers = self._extract_speakers_via_patterns(raw_response, expected_count, text_metadata)
+            
+            if speakers and len(speakers) == expected_count:
+                self.logger.debug("Level 3 success: Pattern extraction found all speakers")
+                return self._validate_and_clean_speakers(speakers, text_metadata, numbered_lines)
+                
+        except Exception as e:
+            self.logger.debug(f"Level 3 error: {e}")
+        
+        self.logger.debug("Level 3 failed: Pattern extraction unsuccessful")
+        return None
+    
+    def _smart_fallback_classification(self, numbered_lines, text_metadata, context_hint):
+        """
+        LEVEL 4: Smart AMBIGUOUS assignment as last resort, but with intelligence.
+        
+        This is NOT the old immediate fallback - it tries to be smart about assignments.
+        
+        Args:
+            numbered_lines: List of text lines to classify
+            text_metadata: Character and format metadata
+            context_hint: Rolling context from previous chunks
+            
+        Returns:
+            List of speaker names (guaranteed to match expected count)
+        """
+        self.logger.debug("Level 4: Using smart fallback classification")
+        
+        speakers = []
+        known_characters = set()
+        if text_metadata:
+            known_characters = text_metadata.get('potential_character_names', set())
+            for profile in text_metadata.get('character_profiles', []):
+                known_characters.add(profile['name'])
+        
+        for line in numbered_lines:
+            speaker = self._smart_classify_single_line(line, known_characters, context_hint)
+            speakers.append(speaker)
+        
+        self.logger.debug(f"Level 4 completed: Smart fallback assigned {len(speakers)} speakers")
+        return speakers
+    
+    def _process_contextual_chunks(self, numbered_lines, text_metadata, context_hint=None):
         """
         Process lines in small contextual chunks with speaker memory for better accuracy.
+        Updated to handle rolling context hints.
         """
         chunk_size = 6  # Reduced from 25 to 6 for much better LLM performance
         all_speakers = []
         speaker_context = []  # Track recent speakers for context
+        
+        # Initialize with any existing context hint
+        if context_hint and context_hint.get('recent_speakers'):
+            speaker_context = list(context_hint['recent_speakers'])
         
         self.logger.info(f"Processing {len(numbered_lines)} lines in chunks of {chunk_size}")
         
@@ -177,8 +346,16 @@ class LLMOrchestrator:
             # Add context from previous chunks for continuity
             enhanced_metadata = self._add_speaker_context(text_metadata, speaker_context)
             
-            # Process the small chunk
-            chunk_speakers = self.get_speaker_classifications(chunk, enhanced_metadata)
+            # Create context hint for this chunk
+            chunk_context_hint = {
+                'recent_speakers': speaker_context[-5:] if speaker_context else [],
+                'chunk_position': i // chunk_size
+            }
+            if context_hint:
+                chunk_context_hint.update(context_hint)
+            
+            # Process the small chunk with enhanced context
+            chunk_speakers = self.get_speaker_classifications(chunk, enhanced_metadata, chunk_context_hint)
             
             if chunk_speakers:
                 all_speakers.extend(chunk_speakers)
@@ -186,9 +363,9 @@ class LLMOrchestrator:
                 # Update speaker context for next chunk
                 speaker_context = self._update_speaker_context(speaker_context, chunk_speakers)
             else:
-                # Fallback if chunk processing fails
-                self.logger.warning(f"Chunk {i//chunk_size + 1} failed, using fallback")
-                fallback_speakers = ["AMBIGUOUS"] * len(chunk)
+                # Smart fallback if chunk processing fails
+                self.logger.warning(f"Chunk {i//chunk_size + 1} failed, using smart fallback")
+                fallback_speakers = self._smart_fallback_classification(chunk, enhanced_metadata, chunk_context_hint)
                 all_speakers.extend(fallback_speakers)
         
         return all_speakers
@@ -310,10 +487,10 @@ JSON:"""
         if speakers and len(speakers) == expected_count:
             return speakers
         
-        # Stage 3: Final fallback with padding/truncation
+        # Stage 3: No padding - return None if wrong length
         if speakers and len(speakers) > 0:
-            self.logger.warning(f"Partial parse success: got {len(speakers)}, expected {expected_count}")
-            return self._smart_padding_truncation(speakers, expected_count)
+            self.logger.warning(f"Partial parse success: got {len(speakers)}, expected {expected_count} - FAILING instead of padding")
+            return None
         
         return None
     
@@ -353,6 +530,11 @@ JSON:"""
         """
         Multi-stage JSON validation with comprehensive error handling.
         """
+        # Debug: Log the parsing attempt
+        self._log_llm_processing("bulletproof_json_parse", 
+                                 f"Input: {response_text[:200]}... | Expected: {expected_count} | Attempt: {attempt}", 
+                                 "Starting bulletproof JSON parsing...")
+        
         # Step 1: Basic JSON validation
         try:
             # Try to parse the entire response as JSON
@@ -360,8 +542,12 @@ JSON:"""
             if isinstance(data, list) and len(data) == expected_count:
                 if all(isinstance(item, str) for item in data):
                     self.logger.debug(f"Direct JSON parse successful (attempt {attempt + 1})")
+                    self._log_llm_processing("bulletproof_json_parse", response_text, 
+                                             f"SUCCESS - Direct parse: {data}")
                     return data
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            self._log_llm_processing("bulletproof_json_parse", response_text, 
+                                     f"Direct parse failed: {e}")
             pass
         
         # Step 2: Extract JSON array pattern
@@ -529,23 +715,6 @@ JSON:"""
         
         return speakers[:expected_count] if speakers else None
     
-    def _smart_padding_truncation(self, speakers, expected_count):
-        """
-        Intelligently pad or truncate speaker array to match expected count.
-        """
-        if len(speakers) == expected_count:
-            return speakers
-        
-        if len(speakers) < expected_count:
-            # Pad with AMBIGUOUS
-            padded = speakers + ["AMBIGUOUS"] * (expected_count - len(speakers))
-            self.logger.info(f"Padded speaker array from {len(speakers)} to {expected_count}")
-            return padded
-        else:
-            # Truncate to expected count
-            truncated = speakers[:expected_count]
-            self.logger.warning(f"Truncated speaker array from {len(speakers)} to {expected_count}")
-            return truncated
     
     def _validate_and_clean_speakers(self, speakers, text_metadata, numbered_lines=None):
         """
@@ -656,15 +825,6 @@ JSON:"""
         
         return assigned_speaker
     
-    def _pad_speaker_array(self, speakers, expected_count):
-        """
-        Pad speaker array to expected count.
-        """
-        while len(speakers) < expected_count:
-            speakers.append("AMBIGUOUS")
-        
-        # Truncate if too long
-        return speakers[:expected_count]
     
     def _normalize_speaker_name(self, speaker_name: str) -> str:
         """
@@ -775,12 +935,8 @@ JSON:"""
                     string_speakers.append("AMBIGUOUS")
                     
             if len(string_speakers) != expected_count:
-                self.logger.warning(f"Speaker count mismatch: expected {expected_count}, got {len(string_speakers)}")
-                # Pad or truncate to match expected count
-                if len(string_speakers) < expected_count:
-                    string_speakers.extend(["AMBIGUOUS"] * (expected_count - len(string_speakers)))
-                else:
-                    string_speakers = string_speakers[:expected_count]
+                self.logger.warning(f"Speaker count mismatch: expected {expected_count}, got {len(string_speakers)} - FAILING instead of padding")
+                return None
                     
             return string_speakers
             
@@ -918,29 +1074,224 @@ JSON:"""
             
         return False
 
+    def _setup_debug_logger(self):
+        """
+        Setup dedicated debug logger for LLM interactions.
+        """
+        try:
+            # Create debug logger
+            self.debug_logger = logging.getLogger('llm_debug')
+            self.debug_logger.setLevel(logging.DEBUG)
+            
+            # Avoid duplicate handlers
+            if not self.debug_logger.handlers:
+                # Create debug log file handler
+                debug_log_path = os.path.join(self.log_dir, settings.LLM_DEBUG_LOG_FILE)
+                os.makedirs(self.log_dir, exist_ok=True)
+                
+                file_handler = logging.FileHandler(debug_log_path, encoding='utf-8')
+                file_handler.setLevel(logging.DEBUG)
+                
+                # Create detailed formatter for debug logs
+                formatter = logging.Formatter(
+                    '%(asctime)s | %(name)s | %(levelname)s | %(message)s'
+                )
+                file_handler.setFormatter(formatter)
+                
+                self.debug_logger.addHandler(file_handler)
+                
+            self.logger.info(f"LLM debug logging enabled - writing to {settings.LLM_DEBUG_LOG_FILE}")
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to setup debug logger: {e}")
+            self.debug_logger = None
+
+    def _log_llm_prompt(self, prompt, context=None):
+        """
+        Log the complete prompt being sent to the LLM.
+        
+        Args:
+            prompt: The prompt string being sent to LLM
+            context: Dictionary with context information (engine, model, attempt, etc.)
+        """
+        if not self.debug_logger:
+            return
+            
+        try:
+            self._debug_counter += 1
+            
+            # Create prompt hash for tracking
+            prompt_hash = hashlib.md5(prompt.encode('utf-8')).hexdigest()[:8]
+            
+            # Truncate if configured
+            display_prompt = prompt
+            if settings.LLM_DEBUG_TRUNCATE_LENGTH > 0 and len(prompt) > settings.LLM_DEBUG_TRUNCATE_LENGTH:
+                display_prompt = prompt[:settings.LLM_DEBUG_TRUNCATE_LENGTH] + "...[TRUNCATED]"
+            
+            # Build context info
+            context_info = ""
+            if settings.LLM_DEBUG_INCLUDE_CONTEXT and context:
+                context_parts = []
+                for key, value in context.items():
+                    context_parts.append(f"{key}={value}")
+                context_info = f" | Context: {', '.join(context_parts)}"
+            
+            # Log the prompt
+            self.debug_logger.debug(
+                f"PROMPT #{self._debug_counter} | Hash: {prompt_hash} | Engine: {self.engine} | "
+                f"Model: {getattr(self, 'local_model', 'default')}{context_info}\n"
+                f"--- PROMPT START ---\n{display_prompt}\n--- PROMPT END ---"
+            )
+            
+            return prompt_hash  # Return hash for correlation with response
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to log LLM prompt: {e}")
+            return None
+
+    def _log_llm_response(self, response, prompt_hash=None, context=None):
+        """
+        Log the raw response from the LLM before any processing.
+        
+        Args:
+            response: The raw response string from LLM
+            prompt_hash: Hash of the corresponding prompt for correlation
+            context: Dictionary with context information
+        """
+        if not self.debug_logger:
+            return
+            
+        try:
+            # If no prompt hash provided, generate one
+            if not prompt_hash:
+                prompt_hash = f"resp_{self._debug_counter}"
+            
+            # Truncate if configured
+            display_response = response
+            if settings.LLM_DEBUG_TRUNCATE_LENGTH > 0 and len(response) > settings.LLM_DEBUG_TRUNCATE_LENGTH:
+                display_response = response[:settings.LLM_DEBUG_TRUNCATE_LENGTH] + "...[TRUNCATED]"
+            
+            # Build context info
+            context_info = ""
+            if settings.LLM_DEBUG_INCLUDE_CONTEXT and context:
+                context_parts = []
+                for key, value in context.items():
+                    context_parts.append(f"{key}={value}")
+                context_info = f" | Context: {', '.join(context_parts)}"
+            
+            # Log the response
+            self.debug_logger.debug(
+                f"RESPONSE #{self._debug_counter} | Hash: {prompt_hash} | Engine: {self.engine}{context_info}\n"
+                f"--- RESPONSE START ---\n{display_response}\n--- RESPONSE END ---"
+            )
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to log LLM response: {e}")
+
+    def _log_llm_processing(self, step_name, input_data, output_data, context=None):
+        """
+        Log intermediate processing steps (sanitization, parsing, etc.).
+        
+        Args:
+            step_name: Name of the processing step
+            input_data: Input to the processing step
+            output_data: Output from the processing step
+            context: Dictionary with context information
+        """
+        if not self.debug_logger or not settings.LLM_DEBUG_LOG_PROCESSING_STEPS:
+            return
+            
+        try:
+            # Build context info
+            context_info = ""
+            if settings.LLM_DEBUG_INCLUDE_CONTEXT and context:
+                context_parts = []
+                for key, value in context.items():
+                    context_parts.append(f"{key}={value}")
+                context_info = f" | Context: {', '.join(context_parts)}"
+            
+            # Truncate data if configured
+            def truncate_data(data):
+                if settings.LLM_DEBUG_TRUNCATE_LENGTH > 0:
+                    str_data = str(data)
+                    if len(str_data) > settings.LLM_DEBUG_TRUNCATE_LENGTH:
+                        return str_data[:settings.LLM_DEBUG_TRUNCATE_LENGTH] + "...[TRUNCATED]"
+                return str(data)
+            
+            display_input = truncate_data(input_data)
+            display_output = truncate_data(output_data)
+            
+            # Log the processing step
+            self.debug_logger.debug(
+                f"PROCESSING #{self._debug_counter} | Step: {step_name}{context_info}\n"
+                f"--- INPUT ---\n{display_input}\n"
+                f"--- OUTPUT ---\n{display_output}\n--- END PROCESSING ---"
+            )
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to log LLM processing step '{step_name}': {e}")
+
     def _get_llm_response(self, prompt):
-        if self.engine == 'gcp':
-            response = self.model.generate_content(prompt)
-            return response.text
-        else: # local
-            payload = {
-                "model": self.local_model,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"temperature": 0.0}
-            }
-            response = requests.post(self.ollama_url, json=payload)
-            response.raise_for_status()
-            return response.json().get('response', '')
+        # Debug: Log the prompt being sent to LLM
+        start_time = time.time()
+        context = {
+            'engine': self.engine,
+            'model': getattr(self, 'local_model', 'default'),
+            'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+        }
+        prompt_hash = self._log_llm_prompt(prompt, context)
+        
+        try:
+            if self.engine == 'gcp':
+                response = self.model.generate_content(prompt)
+                response_text = response.text
+            else: # local
+                payload = {
+                    "model": self.local_model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {"temperature": 0.0}
+                }
+                response = requests.post(self.ollama_url, json=payload)
+                response.raise_for_status()
+                response_text = response.json().get('response', '')
+            
+            # Debug: Log the raw response from LLM
+            end_time = time.time()
+            response_context = context.copy()
+            response_context.update({
+                'response_time_ms': round((end_time - start_time) * 1000, 2),
+                'response_length': len(response_text)
+            })
+            self._log_llm_response(response_text, prompt_hash, response_context)
+            
+            return response_text
+            
+        except Exception as e:
+            # Debug: Log the error
+            error_context = context.copy()
+            error_context.update({
+                'error': str(e),
+                'error_type': type(e).__name__
+            })
+            self._log_llm_response(f"ERROR: {str(e)}", prompt_hash, error_context)
+            raise
 
     def _parse_structured_json(self, response_text, original_prompt):
         """
         Parses the LLM's output, expecting a JSON array of strings (paragraphs).
         """
+        # Debug: Log the parsing attempt
+        self._log_llm_processing("json_extraction", response_text, "Starting JSON extraction...")
+        
         cleaned_text = self._extract_json_from_text(response_text)
         if not cleaned_text:
+            self._log_llm_processing("json_extraction", response_text, "NO JSON FOUND")
             self._log_error("No JSON array found in the response.", original_prompt, response_text)
             return []
+
+        # Debug: Log the cleaned JSON
+        self._log_llm_processing("json_cleaning", response_text, cleaned_text)
 
         try:
             data = json.loads(cleaned_text)
@@ -949,14 +1300,18 @@ JSON:"""
                 # Filter out empty strings and validate remaining items
                 filtered_data = [item for item in data if isinstance(item, str) and item.strip()]
                 if filtered_data:  # Ensure we have at least some valid content
+                    self._log_llm_processing("json_parsing", cleaned_text, filtered_data)
                     return filtered_data
                 else:
+                    self._log_llm_processing("json_validation", data, "NO VALID STRINGS FOUND")
                     self._log_error("JSON array contains no valid non-empty strings.", original_prompt, response_text)
                     return []
             else:
+                self._log_llm_processing("json_validation", data, f"NOT AN ARRAY - TYPE: {type(data)}")
                 self._log_error("JSON data is not an array.", original_prompt, response_text)
                 return []
         except json.JSONDecodeError as e:
+            self._log_llm_processing("json_parsing", cleaned_text, f"JSON DECODE ERROR: {e}")
             self._log_error(f"JSON parsing failed: {e}", original_prompt, response_text)
             return []
 
@@ -1101,3 +1456,455 @@ JSON:"""
         with open(log_filename, "w", encoding="utf-8") as f:
             f.write(f"--- ERROR ---\n{error_message}\n\n--- PROMPT ---\n{prompt}\n\n--- RAW RESPONSE ---\n{response_text}")
         print(f"Error processing LLM response. Details logged to {log_filename}")
+
+    # ========================================
+    # ENHANCED RETRY/REPAIR SYSTEM METHODS
+    # ========================================
+    
+    def _get_prompt_complexity_for_attempt(self, attempt):
+        """
+        Determine prompt complexity based on attempt number for progressive degradation.
+        
+        Args:
+            attempt: 0-based attempt number
+            
+        Returns:
+            String indicating complexity level
+        """
+        if attempt == 0:
+            return "complex"      # Full detailed prompt with examples
+        elif attempt == 1:
+            return "moderate"     # Simplified prompt, fewer examples
+        elif attempt == 2:
+            return "simple"       # Basic prompt, minimal examples
+        else:
+            return "minimal"      # Ultra-simple prompt
+    
+    def _build_progressive_prompt(self, numbered_lines, text_metadata, context_hint, complexity):
+        """
+        Build prompts with progressive complexity degradation.
+        
+        Args:
+            numbered_lines: Lines to classify
+            text_metadata: Character metadata
+            context_hint: Rolling context from previous chunks
+            complexity: "complex", "moderate", "simple", or "minimal"
+            
+        Returns:
+            Prompt string optimized for the complexity level
+        """
+        if complexity == "complex":
+            # Use the full detailed prompt with context hints
+            enhanced_metadata = text_metadata.copy() if text_metadata else {}
+            if context_hint:
+                enhanced_metadata['context_hint'] = context_hint
+            return self.prompt_factory.create_speaker_classification_prompt(numbered_lines, enhanced_metadata)
+        
+        elif complexity == "moderate":
+            # Simplified prompt with basic character context
+            return self._build_moderate_complexity_prompt(numbered_lines, text_metadata, context_hint)
+        
+        elif complexity == "simple":
+            # Basic prompt with minimal context
+            return self._build_simple_complexity_prompt(numbered_lines, text_metadata)
+        
+        else:  # minimal
+            # Ultra-simple prompt
+            return self._build_minimal_complexity_prompt(numbered_lines)
+    
+    def _build_moderate_complexity_prompt(self, numbered_lines, text_metadata, context_hint):
+        """Build moderate complexity prompt with essential context only."""
+        character_names = []
+        if text_metadata:
+            character_names = list(text_metadata.get('potential_character_names', set()))[:5]
+        
+        context_info = ""
+        if context_hint and context_hint.get('recent_speakers'):
+            recent = context_hint['recent_speakers'][-3:]  # Last 3 speakers
+            context_info = f"\nRecent speakers: {', '.join(recent)}"
+        
+        character_context = f"\nCharacters: {', '.join(character_names)}" if character_names else ""
+        
+        numbered_display = ""
+        for i, line in enumerate(numbered_lines, 1):
+            numbered_display += f"{i}. {line}\n"
+        
+        return f"""Classify each line's speaker. Return JSON array with {len(numbered_lines)} names.
+Use "narrator" for descriptions, character names for dialogue, "AMBIGUOUS" if unclear.{character_context}{context_info}
+
+{numbered_display.strip()}
+
+JSON:"""
+    
+    def _build_simple_complexity_prompt(self, numbered_lines, text_metadata):
+        """Build simple prompt with minimal distractions."""
+        numbered_display = ""
+        for i, line in enumerate(numbered_lines, 1):
+            numbered_display += f"{i}. {line}\n"
+        
+        return f"""Who speaks each line? Return {len(numbered_lines)} speaker names as JSON array.
+"narrator" = descriptions, character name = dialogue, "AMBIGUOUS" = unclear.
+
+{numbered_display.strip()}
+
+JSON array:"""
+    
+    def _build_minimal_complexity_prompt(self, numbered_lines):
+        """Build ultra-minimal prompt for final attempts."""
+        numbered_display = ""
+        for i, line in enumerate(numbered_lines, 1):
+            numbered_display += f"{i}. {line}\n"
+        
+        return f"""Return {len(numbered_lines)} speaker names as JSON array:
+
+{numbered_display.strip()}
+
+["""
+    
+    def _get_llm_response_with_prevalidation(self, prompt, expected_count):
+        """
+        Get LLM response with pre-validation to catch obvious failures early.
+        
+        Args:
+            prompt: Prompt to send to LLM
+            expected_count: Expected number of items in response
+            
+        Returns:
+            Response text if pre-validation passes, None otherwise
+        """
+        try:
+            response = self._get_llm_response(prompt)
+            
+            if not response or len(response.strip()) < 5:
+                self.logger.debug("Pre-validation failed: Response too short")
+                return None
+            
+            # Check for obvious error indicators
+            error_patterns = ['sorry', 'cannot', 'unable', 'error', 'failed', 'i apologize', 'i am not']
+            response_lower = response.lower()
+            if any(pattern in response_lower for pattern in error_patterns):
+                self.logger.debug("Pre-validation failed: Response contains error indicators")
+                return None
+            
+            # Check for JSON-like structure
+            if '[' not in response:
+                self.logger.debug("Pre-validation failed: No array structure found")
+                return None
+            
+            # Check reasonable response length (not too short, not too long)
+            if len(response) < expected_count * 2:  # Too short for expected items
+                self.logger.debug("Pre-validation failed: Response too short for expected items")
+                return None
+            
+            if len(response) > expected_count * 200:  # Suspiciously long
+                self.logger.debug("Pre-validation failed: Response suspiciously long")
+                return None
+            
+            return response
+            
+        except Exception as e:
+            self.logger.debug(f"Pre-validation error: {e}")
+            return None
+    
+    def _parse_with_attempt_strategy(self, response_text, expected_count, attempt):
+        """
+        Parse response using attempt-specific strategies.
+        
+        Args:
+            response_text: Raw LLM response
+            expected_count: Expected number of speakers
+            attempt: 0-based attempt number
+            
+        Returns:
+            List of speaker names or None
+        """
+        if attempt == 0:
+            # First attempt: Use most sophisticated parsing
+            return self._bulletproof_json_parse(response_text, expected_count, attempt)
+        elif attempt == 1:
+            # Second attempt: Try alternative parsing strategies
+            return self._parse_speaker_array_alternative(response_text, expected_count)
+        elif attempt == 2:
+            # Third attempt: Aggressive pattern matching
+            return self._parse_aggressive_patterns(response_text, expected_count)
+        else:
+            # Final attempt: Ultra-simple line-by-line
+            return self._parse_ultra_simple_format(response_text, expected_count)
+    
+    def _parse_aggressive_patterns(self, response_text, expected_count):
+        """
+        Aggressive pattern matching for speaker extraction.
+        
+        Args:
+            response_text: Raw response to parse
+            expected_count: Expected number of speakers
+            
+        Returns:
+            List of speaker names or None
+        """
+        speakers = []
+        lines = response_text.split('\n')
+        
+        # Pattern 1: Look for any word that could be a speaker
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+                
+            # Remove common prefixes
+            line = re.sub(r'^\d+[.):]\\s*', '', line)  # Remove numbering
+            line = re.sub(r'^[-*]\\s*', '', line)        # Remove bullets
+            
+            # Extract first word as potential speaker
+            words = line.split()
+            if words:
+                potential_speaker = words[0].strip('",[]{}()')
+                if potential_speaker and len(potential_speaker) > 1:
+                    speakers.append(potential_speaker)
+                    
+                if len(speakers) >= expected_count:
+                    break
+        
+        # Pattern 2: Look for quoted strings
+        if len(speakers) < expected_count:
+            quoted_strings = re.findall(r'"([^"]*)"', response_text)
+            for quoted in quoted_strings:
+                if quoted.strip() and len(quoted.strip()) > 1:
+                    speakers.append(quoted.strip())
+                    if len(speakers) >= expected_count:
+                        break
+        
+        # Return exactly expected count
+        return speakers[:expected_count] if len(speakers) >= expected_count else None
+    
+    def _validate_speaker_quality(self, speakers, numbered_lines, text_metadata):
+        """
+        Quick quality validation of speaker assignments.
+        
+        Args:
+            speakers: List of speaker names
+            numbered_lines: Original text lines
+            text_metadata: Character metadata
+            
+        Returns:
+            True if quality is acceptable, False otherwise
+        """
+        if not speakers or len(speakers) != len(numbered_lines):
+            return False
+        
+        # Check for reasonable speaker diversity
+        unique_speakers = set(speakers)
+        if len(unique_speakers) < 2 and len(speakers) > 3:  # All same speaker for multiple lines is suspicious
+            return False
+        
+        # Check that we don't have too many single-use speakers
+        from collections import Counter
+        speaker_counts = Counter(speakers)
+        single_use_count = sum(1 for count in speaker_counts.values() if count == 1)
+        if single_use_count > len(speakers) * 0.7:  # More than 70% single-use is suspicious
+            return False
+        
+        return True
+    
+    def _build_simple_classification_prompt(self, numbered_lines, text_metadata, context_hint):
+        """Build simple prompt for self-correction attempts."""
+        numbered_display = ""
+        for i, line in enumerate(numbered_lines, 1):
+            numbered_display += f"{i}. {line}\n"
+        
+        return f"""Classify speakers for these {len(numbered_lines)} lines. Return simple JSON array.
+
+{numbered_display.strip()}
+
+Answer:"""
+    
+    def _analyze_response_errors(self, raw_response, expected_count):
+        """
+        Analyze what went wrong with an LLM response.
+        
+        Args:
+            raw_response: The malformed response
+            expected_count: Expected number of items
+            
+        Returns:
+            Dictionary describing the correction strategy needed
+        """
+        strategy = {
+            'error_type': 'unknown',
+            'correction_hint': 'Fix format',
+            'expected_count': expected_count
+        }
+        
+        if not raw_response or len(raw_response.strip()) < 3:
+            strategy['error_type'] = 'empty_response'
+            strategy['correction_hint'] = 'Provide a response'
+            return strategy
+        
+        # Check for JSON structure issues
+        if '[' not in raw_response or ']' not in raw_response:
+            strategy['error_type'] = 'missing_brackets'
+            strategy['correction_hint'] = 'Use JSON array format with square brackets'
+        elif raw_response.count('[') != raw_response.count(']'):
+            strategy['error_type'] = 'unmatched_brackets'
+            strategy['correction_hint'] = 'Match opening and closing brackets'
+        elif ',' not in raw_response and expected_count > 1:
+            strategy['error_type'] = 'missing_commas'
+            strategy['correction_hint'] = 'Separate items with commas'
+        elif '"' not in raw_response and "'" not in raw_response:
+            strategy['error_type'] = 'missing_quotes'
+            strategy['correction_hint'] = 'Put speaker names in double quotes'
+        else:
+            strategy['error_type'] = 'format_issue'
+            strategy['correction_hint'] = 'Fix JSON format'
+        
+        return strategy
+    
+    def _build_self_correction_prompt(self, raw_response, correction_strategy, expected_count):
+        """
+        Build prompt for LLM self-correction.
+        
+        Args:
+            raw_response: The malformed response
+            correction_strategy: Strategy from error analysis
+            expected_count: Expected number of items
+            
+        Returns:
+            Self-correction prompt
+        """
+        error_type = correction_strategy['error_type']
+        hint = correction_strategy['correction_hint']
+        
+        return f"""Your previous response had a formatting issue. Please fix it.
+
+PROBLEM: {hint}
+EXPECTED: JSON array with exactly {expected_count} speaker names
+
+YOUR PREVIOUS RESPONSE:
+{raw_response[:200]}...
+
+CORRECT FORMAT EXAMPLE: ["speaker1", "speaker2", "speaker3"]
+
+CORRECTED RESPONSE:"""
+    
+    def _build_flexible_classification_prompt(self, numbered_lines, text_metadata, context_hint):
+        """Build flexible prompt that accepts any format for pattern extraction."""
+        numbered_display = ""
+        for i, line in enumerate(numbered_lines, 1):
+            numbered_display += f"{i}. {line}\n"
+        
+        return f"""For each numbered line, who is speaking? List {len(numbered_lines)} answers in any format.
+
+{numbered_display.strip()}
+
+Answers (any format):"""
+    
+    def _extract_speakers_via_patterns(self, raw_response, expected_count, text_metadata):
+        """
+        Extract speakers using multiple pattern recognition strategies.
+        
+        Args:
+            raw_response: Raw LLM response in any format
+            expected_count: Expected number of speakers
+            text_metadata: Character metadata for validation
+            
+        Returns:
+            List of speaker names or None
+        """
+        speakers = []
+        known_characters = set()
+        
+        if text_metadata:
+            known_characters = text_metadata.get('potential_character_names', set())
+            for profile in text_metadata.get('character_profiles', []):
+                known_characters.add(profile['name'])
+        
+        # Strategy 1: Line-by-line extraction
+        lines = raw_response.split('\n')
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Remove numbering
+            line = re.sub(r'^\d+[.):]\\s*', '', line)
+            
+            # Extract potential speaker names
+            words = line.split()
+            for word in words:
+                clean_word = word.strip('",[]{}():.-').title()
+                if clean_word in known_characters or clean_word.lower() in ['narrator', 'ambiguous']:
+                    speakers.append(clean_word.lower() if clean_word.lower() in ['narrator', 'ambiguous'] else clean_word)
+                    break
+            
+            if len(speakers) >= expected_count:
+                break
+        
+        # Strategy 2: Pattern matching for common terms
+        if len(speakers) < expected_count:
+            # Look for narrator/ambiguous markers
+            narrator_pattern = r'\b(narrator|narration|description)\b'
+            ambiguous_pattern = r'\b(ambiguous|unclear|unknown)\b'
+            
+            remaining_needed = expected_count - len(speakers)
+            for i in range(remaining_needed):
+                if re.search(narrator_pattern, raw_response, re.IGNORECASE):
+                    speakers.append('narrator')
+                elif re.search(ambiguous_pattern, raw_response, re.IGNORECASE):
+                    speakers.append('AMBIGUOUS')
+                else:
+                    # Random character from known list or AMBIGUOUS
+                    if known_characters:
+                        speakers.append(list(known_characters)[i % len(known_characters)])
+                    else:
+                        speakers.append('AMBIGUOUS')
+        
+        return speakers[:expected_count] if len(speakers) >= expected_count else None
+    
+    def _smart_classify_single_line(self, line, known_characters, context_hint):
+        """
+        Smart classification of a single line using rule-based logic.
+        
+        Args:
+            line: Text line to classify
+            known_characters: Set of known character names
+            context_hint: Context from previous chunks
+            
+        Returns:
+            Speaker name (string)
+        """
+        line_clean = line.strip()
+        
+        # Rule 1: Explicit dialogue markers
+        if any(marker in line_clean for marker in ['"', '"', '"']):
+            # Has dialogue markers - could be character speech
+            if context_hint and context_hint.get('recent_speakers'):
+                # Use recent speaker context for educated guess
+                recent_speakers = [s for s in context_hint['recent_speakers'] if s not in ['narrator', 'AMBIGUOUS']]
+                if recent_speakers:
+                    return recent_speakers[-1]  # Most recent character speaker
+            
+            # Check for character names mentioned in the line
+            for char in known_characters:
+                if char.lower() in line_clean.lower():
+                    return char
+            
+            return 'AMBIGUOUS'  # Has dialogue but can't determine speaker
+        
+        # Rule 2: Script format (Character: dialogue)
+        if ':' in line_clean and len(line_clean.split(':')[0].strip()) < 20:
+            potential_speaker = line_clean.split(':')[0].strip()
+            if potential_speaker.title() in known_characters:
+                return potential_speaker.title()
+        
+        # Rule 3: Action/description text
+        action_indicators = ['walked', 'said', 'looked', 'turned', 'moved', 'stepped']
+        if any(indicator in line_clean.lower() for indicator in action_indicators):
+            return 'narrator'
+        
+        # Rule 4: Internal thoughts/descriptions
+        thought_indicators = ['thought', 'realized', 'remembered', 'felt', 'knew']
+        if any(indicator in line_clean.lower() for indicator in thought_indicators):
+            return 'narrator'
+        
+        # Default: If no clear indicators, use narrator for safety
+        return 'narrator'

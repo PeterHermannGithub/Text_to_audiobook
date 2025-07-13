@@ -19,14 +19,14 @@ class PromptFactory:
     
     def create_speaker_classification_prompt(self, numbered_lines, text_metadata=None):
         """
-        Creates a speaker classification prompt for the LLM.
+        SIMPLIFIED: Creates a much simpler speaker classification prompt.
         
         The LLM receives pre-segmented, numbered lines and must return exactly 
         the same number of speaker names in a JSON array.
         
         Args:
             numbered_lines: List of strings, each representing a pre-segmented line
-            text_metadata: Metadata containing character names and format info
+            text_metadata: Metadata containing character names, format info, and context hints
             
         Returns:
             String prompt for speaker classification
@@ -34,118 +34,45 @@ class PromptFactory:
         if not numbered_lines:
             return ""
             
-        # Extract context information from metadata
+        # Extract POV information for narrative style rules
+        pov_analysis = text_metadata.get('pov_analysis', {}) if text_metadata else {}
+        pov_type = pov_analysis.get('type', 'UNKNOWN')
+        narrator_id = pov_analysis.get('narrator_identifier', 'narrator')
+        
+        # Build dynamic POV rules
+        pov_rules = self._build_dynamic_pov_rules(pov_type, narrator_id)
+        
+        # Extract character information
         character_profiles = text_metadata.get('character_profiles', []) if text_metadata else []
-        character_names = list(text_metadata.get('potential_character_names', set())) if text_metadata else []
-        dialogue_markers = text_metadata.get('dialogue_markers', set()) if text_metadata else set()
-        is_script_like = text_metadata.get('is_script_like', False) if text_metadata else False
+        character_list = self._build_character_list_for_pov(character_profiles, pov_type, narrator_id)
         
-        # Build enhanced character context using rich profiles
-        character_context = ""
-        if character_profiles:
-            context_lines = []
-            for profile in character_profiles[:10]:  # Limit to top 10 characters
-                profile_line = f"- {profile['name']}"
-                
-                # Add pronouns for gender context
-                if profile['pronouns']:
-                    gender_hint = self._infer_gender_from_pronouns(profile['pronouns'])
-                    if gender_hint:
-                        profile_line += f" ({gender_hint})"
-                
-                # Add titles if present
-                if profile['titles']:
-                    profile_line += f" [titles: {', '.join(profile['titles'][:3])}]"
-                
-                # Add aliases if present
-                if profile['aliases']:
-                    profile_line += f" [aliases: {', '.join(profile['aliases'][:2])}]"
-                
-                context_lines.append(profile_line)
-            
-            character_context = f"\n\nKNOWN CHARACTERS:\n" + "\n".join(context_lines)
-        elif character_names:
-            # Fallback to simple names for backward compatibility
-            character_context = f"\n\nKNOWN CHARACTERS: {', '.join(sorted(character_names)[:15])}"
+        # Build context block (if provided)
+        context_hint = text_metadata.get('context_hint', {}) if text_metadata else {}
+        context_block = ""
+        if context_hint:
+            rolling_context = self._build_rolling_context_section(context_hint)
+            if rolling_context:
+                context_block = f"\n\n---CONTEXT BLOCK (Previous text for context)---\n{rolling_context.strip()}"
         
-        format_context = ""
-        if is_script_like:
-            format_context = "\n\nFORMAT NOTE: This text contains script-style dialogue (Character: speech)."
-        
-        dialogue_context = ""
-        if dialogue_markers:
-            dialogue_context = f"\n\nDIALOGUE MARKERS: {', '.join(list(dialogue_markers)[:5])}"
-        
-        # Create numbered line display
-        numbered_display = ""
+        # Build task block
+        task_block = ""
         for i, line in enumerate(numbered_lines, 1):
-            numbered_display += f"{i}. {line}\n"
+            task_block += f"{i}. {line}\n"
         
-        num_lines = len(numbered_lines)
+        task_block_line_count = len(numbered_lines)
         
-        return f"""🎯 SPEAKER CLASSIFICATION TASK
+        # ULTRATHINK SIMPLIFIED TEMPLATE - Critical instruction at the very end
+        return f"""TASK: For each numbered line in the 'TASK BLOCK', identify the speaker.
 
-⚠️ CRITICAL: You MUST output ONLY a valid JSON array. No explanations, no text, ONLY the JSON array.
+NARRATIVE STYLE: {pov_rules}
 
-📋 FORMAT REQUIREMENT:
-Your response must be EXACTLY this format: ["speaker1", "speaker2", "speaker3", ...]
-- Must be valid JSON
-- Must contain exactly {num_lines} strings
-- Must use double quotes, not single quotes
-- No trailing commas
+CHARACTERS:
+{character_list}{context_block}
 
-👥 SPEAKER TYPES:
-- "narrator" = Text describing actions, thoughts, or scenes
-- Character names = Text spoken by characters (e.g., "John", "Sarah")  
-- "AMBIGUOUS" = Cannot determine who is speaking
+---TASK BLOCK (Lines to classify)---
+{task_block.strip()}
 
-🔥 KEY RULE: Character mentioned ≠ Character speaking
-- "John walked to the door" → "narrator" (describes John)
-- "I'm leaving," John said → "John" (John speaks)
-
-📚 EXAMPLES WITH EXACT REQUIRED OUTPUT:
-
-Example 1:
-[INPUT]
-1. The storm was approaching fast.
-2. "We need to take shelter," Sarah warned.
-3. Everyone nodded in agreement.
-[REQUIRED OUTPUT] ["narrator", "Sarah", "narrator"]
-
-Example 2:
-[INPUT]  
-1. ALICE: This is impossible!
-2. "What do you mean?"
-3. The room fell silent.
-[REQUIRED OUTPUT] ["Alice", "AMBIGUOUS", "narrator"]
-
-Example 3:
-[INPUT]
-1. "Ready?" Tom asked nervously.
-2. Lisa checked her equipment once more.
-3. "Let's do this."
-[REQUIRED OUTPUT] ["Tom", "narrator", "AMBIGUOUS"]
-
-Example 4 - CHARACTER NAME vs SPEAKER:
-[INPUT]
-1. Marcus stepped into the arena.
-2. The crowd was cheering for Marcus.
-3. "I won't lose!" Marcus shouted.
-4. Marcus's heart was pounding.
-[REQUIRED OUTPUT] ["narrator", "narrator", "Marcus", "narrator"]
-
-Example 5 - MIXED CONTENT:
-[INPUT]
-1. [System alert: Danger detected]
-2. "Help us!"
-3. The explosion shook the building.
-[REQUIRED OUTPUT] ["AMBIGUOUS", "AMBIGUOUS", "narrator"]{character_context}{format_context}
-
-🎯 YOUR TASK - CLASSIFY THESE {num_lines} LINES:
-
-{numbered_display.strip()}
-
-⚠️ RESPOND WITH ONLY THE JSON ARRAY - NO OTHER TEXT:"""
+Your response MUST be a single, valid JSON array with exactly {task_block_line_count} string items."""
 
     def create_json_correction_prompt(self, malformed_json_text):
         """
@@ -261,3 +188,247 @@ Your previous response was not valid JSON. You MUST fix it and respond with ONLY
             return 'neutral'
         
         return None
+
+    def _build_rolling_context_section(self, context_hint):
+        """
+        Build rolling context section for the prompt.
+        
+        Args:
+            context_hint: Dictionary containing rolling context information
+            
+        Returns:
+            String containing formatted rolling context section
+        """
+        if not context_hint:
+            return ""
+        
+        context_sections = []
+        
+        # Recent speakers context
+        if context_hint.get('recent_speakers'):
+            recent_speakers = context_hint['recent_speakers']
+            if recent_speakers:
+                # Filter out generic speakers for better context
+                character_speakers = [s for s in recent_speakers if s not in ['narrator', 'AMBIGUOUS']]
+                if character_speakers:
+                    context_sections.append(f"Recent speakers: {', '.join(character_speakers[-3:])}")
+                else:
+                    context_sections.append(f"Recent speakers: {', '.join(recent_speakers[-3:])}")
+        
+        # Conversation flow context
+        if context_hint.get('conversation_flow'):
+            flow_info = context_hint['conversation_flow']
+            if isinstance(flow_info, list) and flow_info:
+                flow_preview = []
+                for flow_item in flow_info[-2:]:  # Last 2 conversation turns
+                    speaker = flow_item.get('speaker', 'unknown')
+                    text_preview = flow_item.get('text', '')[:40] + "..." if len(flow_item.get('text', '')) > 40 else flow_item.get('text', '')
+                    flow_preview.append(f"{speaker}: {text_preview}")
+                
+                if flow_preview:
+                    context_sections.append(f"Previous conversation:\n" + "\n".join(flow_preview))
+        
+        # Chunk position context (helps with continuity)
+        if context_hint.get('chunk_position') is not None:
+            chunk_pos = context_hint['chunk_position']
+            if chunk_pos > 0:
+                context_sections.append(f"This is continuation of text (chunk {chunk_pos + 1})")
+        
+        # Character introduction context
+        if context_hint.get('introduced_characters'):
+            introduced = context_hint['introduced_characters']
+            if introduced:
+                context_sections.append(f"Characters introduced in recent text: {', '.join(introduced[:5])}")
+        
+        # Build final context section
+        if context_sections:
+            context_text = "\n\n🔄 ROLLING CONTEXT (from previous text):\n" + "\n".join(f"• {section}" for section in context_sections)
+            context_text += "\n(Use this context to maintain conversation flow and character consistency)"
+            return context_text
+        
+        return ""
+
+    def create_pov_aware_classification_prompt(self, task_lines, context_lines=None, text_metadata=None):
+        """
+        Creates a POV-aware speaker classification prompt using the Context vs Task model.
+        
+        This implements the Ultrathink architecture's Phase 2: Universal POV-Aware Prompting.
+        Uses dynamic POV rules based on the narrative perspective analysis.
+        
+        Args:
+            task_lines: List of lines to classify (the actual task)
+            context_lines: List of context lines to provide background (not to classify)
+            text_metadata: Metadata including POV analysis and character information
+            
+        Returns:
+            String prompt optimized for the detected POV type
+        """
+        if not task_lines:
+            return ""
+        
+        # Extract POV analysis from metadata
+        pov_analysis = text_metadata.get('pov_analysis', {}) if text_metadata else {}
+        pov_type = pov_analysis.get('type', 'UNKNOWN')
+        narrator_id = pov_analysis.get('narrator_identifier', 'narrator')
+        
+        # Build dynamic POV rules based on analysis
+        dynamic_pov_rules = self._build_dynamic_pov_rules(pov_type, narrator_id)
+        
+        # Extract character information
+        character_profiles = text_metadata.get('character_profiles', []) if text_metadata else []
+        character_list = self._build_character_list_for_pov(character_profiles, pov_type, narrator_id)
+        
+        # Build context block (if provided)
+        context_block = ""
+        if context_lines:
+            context_block = self._build_context_block(context_lines)
+        
+        # Build task block
+        task_block = self._build_task_block(task_lines)
+        task_count = len(task_lines)
+        
+        # Build rolling context section if available
+        rolling_context = ""
+        context_hint = text_metadata.get('context_hint', {}) if text_metadata else {}
+        if context_hint:
+            rolling_context = self._build_rolling_context_section(context_hint)
+        
+        # Construct the universal POV-aware prompt
+        return f"""TASK: Identify the speaker for each line in the 'LINES TO CLASSIFY' section.
+
+NARRATIVE STYLE:
+{dynamic_pov_rules}
+
+SPEAKER TYPES:
+- 'narrator': For descriptive text or thoughts in a third-person story.
+- '{narrator_id}': For the main character's narration in a first-person story.
+- Character names (e.g., 'Yoo Sangah'): For text inside quotation marks.
+- 'AMBIGUOUS': If the speaker of dialogue is truly unclear.
+
+KNOWN CHARACTERS:
+{character_list}
+
+--- CONTEXT BLOCK (DO NOT CLASSIFY THESE LINES) ---
+{context_block}
+
+--- LINES TO CLASSIFY (TASK BLOCK) ---
+{task_block}
+
+INSTRUCTIONS:
+Respond with a valid JSON array containing exactly {task_count} speaker names. Your entire response must be only the JSON array.{rolling_context}"""
+
+    def _build_dynamic_pov_rules(self, pov_type, narrator_id):
+        """
+        Build dynamic POV rules based on the detected narrative perspective.
+        
+        Args:
+            pov_type: Detected POV type ('FIRST_PERSON', 'THIRD_PERSON', 'MIXED', etc.)
+            narrator_id: Identifier for the narrator
+            
+        Returns:
+            String containing POV-specific rules
+        """
+        if pov_type == 'FIRST_PERSON':
+            return f"""This story is told in the first person. Lines from the 'I' or 'my' perspective are spoken by '{narrator_id}'.
+Text describing actions, thoughts, or scenes from the narrator's perspective should be attributed to '{narrator_id}'.
+Only dialogue within quotation marks spoken by other characters should be attributed to those character names."""
+        
+        elif pov_type == 'THIRD_PERSON':
+            return f"""This story is told in the third person. Text describing scenes, actions, or thoughts is spoken by the 'narrator'.
+Character dialogue within quotation marks should be attributed to the specific character speaking.
+Avoid attributing narrative descriptions to characters unless they are clearly speaking."""
+        
+        elif pov_type == 'MIXED':
+            return f"""This story uses mixed narrative perspectives. Text describing scenes or actions is usually spoken by the 'narrator'.
+Lines from a first-person perspective ('I', 'my') may be spoken by '{narrator_id}' when clearly from the main character.
+Character dialogue within quotation marks should be attributed to the specific character speaking."""
+        
+        else:  # UNKNOWN or other
+            return f"""Analyze the narrative style carefully. Text describing scenes, actions, or thoughts is usually spoken by the 'narrator'.
+Character dialogue within quotation marks should be attributed to the specific character speaking.
+Lines from a clear first-person perspective may be spoken by a main character if identifiable."""
+
+    def _build_character_list_for_pov(self, character_profiles, pov_type, narrator_id):
+        """
+        Build character list optimized for the detected POV type.
+        
+        Args:
+            character_profiles: List of character profile dictionaries
+            pov_type: Detected POV type
+            narrator_id: Narrator identifier
+            
+        Returns:
+            Formatted string of character information
+        """
+        if not character_profiles:
+            if pov_type == 'FIRST_PERSON':
+                return f"- {narrator_id} (main character/narrator)"
+            else:
+                return "No specific characters identified"
+        
+        character_lines = []
+        
+        # Add narrator if first person
+        if pov_type == 'FIRST_PERSON':
+            character_lines.append(f"- {narrator_id} (main character/narrator)")
+        
+        # Add other characters
+        for profile in character_profiles[:10]:  # Limit to top 10
+            name = profile['name']
+            
+            # Skip if this is the narrator in first person
+            if pov_type == 'FIRST_PERSON' and name == narrator_id:
+                continue
+                
+            profile_line = f"- {name}"
+            
+            # Add gender hints if available
+            pronouns = profile.get('pronouns', [])
+            if pronouns:
+                gender_hint = self._infer_gender_from_pronouns(pronouns)
+                if gender_hint:
+                    profile_line += f" ({gender_hint})"
+            
+            # Add aliases if present
+            aliases = profile.get('aliases', [])
+            if aliases:
+                profile_line += f" [also: {', '.join(aliases[:2])}]"
+            
+            character_lines.append(profile_line)
+        
+        return "\n".join(character_lines)
+
+    def _build_context_block(self, context_lines):
+        """
+        Build the context block from provided context lines.
+        
+        Args:
+            context_lines: List of context lines to display
+            
+        Returns:
+            Formatted context block string
+        """
+        if not context_lines:
+            return "(No context provided)"
+        
+        context_display = ""
+        for i, line in enumerate(context_lines, 1):
+            context_display += f"{i}. {line}\n"
+        
+        return context_display.strip()
+
+    def _build_task_block(self, task_lines):
+        """
+        Build the task block from lines to classify.
+        
+        Args:
+            task_lines: List of lines to classify
+            
+        Returns:
+            Formatted task block string
+        """
+        task_display = ""
+        for i, line in enumerate(task_lines, 1):
+            task_display += f"{i}. {line}\n"
+        
+        return task_display.strip()

@@ -114,27 +114,45 @@ class TextStructurer:
             text_metadata = self.preprocessor.analyze(text_content)
             self.logger.info(f"Preprocessing completed. Found {len(text_metadata.get('potential_character_names', set()))} potential characters")
 
-            # Create chunks
-            self.logger.info("Creating text chunks...")
-            chunks = self.chunk_manager.create_chunks(text_content, text_metadata['scene_breaks'])
-            self.logger.info(f"Created {len(chunks)} chunks for processing")
+            # Create sliding windows (Ultrathink Architecture - Phase 3)
+            if settings.SLIDING_WINDOW_ENABLED:
+                self.logger.info("Creating sliding windows for processing...")
+                windows = self.chunk_manager.create_sliding_windows(text_content, text_metadata['scene_breaks'], text_metadata)
+                self.logger.info(f"Created {len(windows)} sliding windows for processing")
+            else:
+                self.logger.info("Creating legacy text chunks...")
+                chunks = self.chunk_manager.create_chunks(text_content, text_metadata['scene_breaks'])
+                windows = self.chunk_manager._convert_chunks_to_windows(chunks)
+                self.logger.info(f"Created {len(windows)} windows from {len(chunks)} legacy chunks")
             
             all_structured_segments = []
-            processed_data_with_chunks = []
-            failed_chunks = []
+            processed_data_with_windows = []
+            failed_windows = []
             
-            for i, chunk in enumerate(tqdm(chunks, desc="Processing chunks")):
+            # NEW: Initialize rolling context for cross-window continuity
+            rolling_context = {}
+            
+            # Log POV analysis results
+            pov_analysis = text_metadata.get('pov_analysis', {})
+            self.logger.info(f"POV Analysis: {pov_analysis.get('type', 'UNKNOWN')} "
+                           f"(confidence: {pov_analysis.get('confidence', 0.0):.2f}, "
+                           f"narrator: {pov_analysis.get('narrator_identifier', 'unknown')})")
+            
+            for i, window in enumerate(tqdm(windows, desc="Processing windows")):
                 try:
-                    self.logger.debug(f"Processing chunk {i+1}/{len(chunks)}")
+                    self.logger.debug(f"Processing window {i+1}/{len(windows)}")
                     
-                    # Phase 2: Deterministic segmentation first
-                    numbered_lines = self.deterministic_segmenter.segment_text(chunk, text_metadata)
+                    # Extract task lines for processing (these are the lines to classify)
+                    task_lines = window['task_lines']
+                    context_lines = window['context_lines']
+                    
+                    # Phase 2: Deterministic segmentation on task lines
+                    # Convert task lines to numbered line format for compatibility
+                    numbered_lines = [{"line_id": j+1, "text": line} for j, line in enumerate(task_lines)]
                     
                     if not numbered_lines:
-                        self.logger.warning(f"Empty segmentation for chunk {i+1}, using fallback")
-                        # Fallback: simple sentence splitting converted to numbered lines
-                        fallback_segments = self._fallback_text_splitting(chunk)
-                        numbered_lines = [{"line_id": i+1, "text": seg} for i, seg in enumerate(fallback_segments)]
+                        self.logger.warning(f"Empty task lines for window {i+1}, skipping")
+                        continue
                     
                     # Phase 2.5: Rule-based attribution first pass
                     attributed_lines = self.rule_based_attributor.process_lines(numbered_lines, text_metadata)
@@ -143,56 +161,95 @@ class TextStructurer:
                     pending_ai_lines = self.rule_based_attributor.get_pending_lines(attributed_lines)
                     rule_attributed_lines = self.rule_based_attributor.get_attributed_lines(attributed_lines)
                     
-                    self.logger.debug(f"Chunk {i+1}: {len(rule_attributed_lines)} rule-attributed, {len(pending_ai_lines)} need AI")
+                    self.logger.debug(f"Window {i+1}: {len(rule_attributed_lines)} rule-attributed, {len(pending_ai_lines)} need AI")
                     
-                    # Phase 3: LLM processing for remaining lines (speaker classification only)
+                    # Phase 3: POV-Aware LLM processing for remaining lines
                     if pending_ai_lines:
                         # Extract just the text content for LLM classification
-                        text_lines = [line['text'] for line in pending_ai_lines]
+                        task_text_lines = [line['text'] for line in pending_ai_lines]
                         
-                        # NEW APPROACH: Use speaker classification instead of text segmentation
-                        speaker_classifications = self.llm_orchestrator.get_speaker_classifications(text_lines, text_metadata)
+                        # NEW: Create context hint for this window
+                        context_hint = self.chunk_manager.create_context_hint_for_chunk(i, rolling_context)
                         
-                        if not speaker_classifications or len(speaker_classifications) != len(text_lines):
-                            self.logger.warning(f"LLM classification failed for chunk {i+1}, using fallback")
-                            speaker_classifications = ["AMBIGUOUS"] * len(text_lines)
+                        # Add context hint to metadata for POV-aware prompting
+                        enhanced_metadata = text_metadata.copy()
+                        enhanced_metadata['context_hint'] = context_hint
+                        
+                        # ULTRATHINK: Use POV-aware classification with Context vs Task model
+                        if settings.SLIDING_WINDOW_ENABLED and context_lines:
+                            # Use new POV-aware prompting with context
+                            prompt = self.llm_orchestrator.prompt_factory.create_pov_aware_classification_prompt(
+                                task_text_lines, context_lines, enhanced_metadata
+                            )
+                            response = self.llm_orchestrator._get_llm_response(prompt)
+                            speaker_classifications = self.llm_orchestrator._parse_speaker_array_enhanced(
+                                response, len(task_text_lines), 0
+                            )
+                        else:
+                            # Fallback to legacy speaker classification
+                            speaker_classifications = self.llm_orchestrator.get_speaker_classifications(
+                                task_text_lines, enhanced_metadata, context_hint
+                            )
+                        
+                        if not speaker_classifications or len(speaker_classifications) != len(task_text_lines):
+                            self.logger.warning(f"LLM classification failed for window {i+1}, using fallback")
+                            speaker_classifications = ["AMBIGUOUS"] * len(task_text_lines)
                         
                         # Combine text lines with AI-classified speakers
                         ai_structured_data = []
-                        for text_line, speaker in zip(text_lines, speaker_classifications):
+                        for text_line, speaker in zip(task_text_lines, speaker_classifications):
                             ai_structured_data.append({"speaker": speaker, "text": text_line})
                     else:
                         ai_structured_data = []
                     
                     # Combine rule-based and AI attributions
                     rule_structured_data = [{"speaker": line['speaker'], "text": line['text']} for line in rule_attributed_lines]
-                    structured_data_for_chunk = rule_structured_data + ai_structured_data
+                    structured_data_for_window = rule_structured_data + ai_structured_data
                     
-                    # Add chunk index information for validation
-                    for segment in structured_data_for_chunk:
-                        processed_data_with_chunks.append((segment, i))
+                    # Add window index information for validation
+                    for segment in structured_data_for_window:
+                        processed_data_with_windows.append((segment, i))
                     
-                    all_structured_segments = self.chunk_manager.merge(
-                        all_structured_segments, structured_data_for_chunk
-                    )
+                    # For sliding windows, we need smarter merging to handle overlaps
+                    if settings.SLIDING_WINDOW_ENABLED:
+                        all_structured_segments = self._merge_sliding_window_results(
+                            all_structured_segments, structured_data_for_window, window
+                        )
+                    else:
+                        all_structured_segments = self.chunk_manager.merge(
+                            all_structured_segments, structured_data_for_window
+                        )
                     
-                except Exception as chunk_error:
-                    self.logger.error(f"Failed to process chunk {i+1}: {chunk_error}", exc_info=True)
-                    failed_chunks.append(i)
+                    # NEW: Extract context from this window for the next window
+                    window_context = self.chunk_manager.extract_context_from_processed_segments(structured_data_for_window)
+                    rolling_context = self.chunk_manager.merge_contexts(rolling_context, window_context)
                     
-                    # Attempt fallback processing
+                    self.logger.debug(f"Updated rolling context: {len(rolling_context.get('recent_speakers', []))} recent speakers, "
+                                     f"{len(rolling_context.get('conversation_flow', []))} conversation segments")
+                    
+                except Exception as window_error:
+                    self.logger.error(f"Failed to process window {i+1}: {window_error}", exc_info=True)
+                    failed_windows.append(i)
+                    
+                    # Attempt fallback processing with rolling context
                     try:
-                        self.logger.info(f"Attempting fallback processing for chunk {i+1}")
-                        fallback_segments = self._fallback_chunk_processing(chunk, text_metadata)
+                        self.logger.info(f"Attempting fallback processing for window {i+1}")
+                        fallback_segments = self._fallback_window_processing(window, text_metadata, rolling_context)
                         for segment in fallback_segments:
-                            processed_data_with_chunks.append((segment, i))
-                        all_structured_segments.extend(fallback_segments)
+                            processed_data_with_windows.append((segment, i))
+                        
+                        if settings.SLIDING_WINDOW_ENABLED:
+                            all_structured_segments = self._merge_sliding_window_results(
+                                all_structured_segments, fallback_segments, window
+                            )
+                        else:
+                            all_structured_segments.extend(fallback_segments)
                     except Exception as fallback_error:
-                        self.logger.error(f"Fallback processing also failed for chunk {i+1}: {fallback_error}")
+                        self.logger.error(f"Fallback processing also failed for window {i+1}: {fallback_error}")
                         continue
 
-            if failed_chunks:
-                self.logger.warning(f"Failed to process {len(failed_chunks)} chunks: {failed_chunks}")
+            if failed_windows:
+                self.logger.warning(f"Failed to process {len(failed_windows)} windows: {failed_windows}")
                 
         except Exception as preprocessing_error:
             self.logger.error(f"Critical error in preprocessing stage: {preprocessing_error}", exc_info=True)
@@ -202,16 +259,26 @@ class TextStructurer:
         
         # Run validation and contextual refinement on the complete dataset
         try:
-            validated_data, quality_report = self.validator.validate(processed_data_with_chunks, text_content, text_metadata)
+            validated_data, quality_report = self.validator.validate(processed_data_with_windows, text_content, text_metadata)
             print(f"Initial quality score: {quality_report['quality_score']:.2f}% ({quality_report['error_count']} errors)")
             
             # Extract segments for contextual refinement (remove chunk indices temporarily)
             segments_only = [segment for segment, chunk_idx in validated_data]
             
-            # Run contextual refinement on AMBIGUOUS speakers with segment tracking
-            print("Running contextual refinement for AMBIGUOUS speakers...")
+            # ENHANCED: Pass detailed validation errors to contextual refiner for targeted fixes
+            print("Running enhanced contextual refinement with error-specific strategies...")
             original_segment_count = len(segments_only)
-            contextually_refined_segments = self.contextual_refiner.refine_ambiguous_speakers(segments_only, text_metadata)
+            
+            # Pass detailed error information to ContextualRefiner
+            detailed_errors = quality_report.get('detailed_errors', [])
+            error_summary = quality_report.get('error_analysis', {}).get('error_summary', {})
+            
+            contextually_refined_segments = self.contextual_refiner.refine_ambiguous_speakers(
+                segments_only, 
+                text_metadata,
+                validation_errors=detailed_errors,
+                error_summary=error_summary
+            )
             refined_segment_count = len(contextually_refined_segments)
             
             # ROBUSTNESS: Track segment count changes
@@ -270,17 +337,13 @@ class TextStructurer:
             # Use updated quality report for decision making
             current_quality_score = updated_quality_report['quality_score']
             
-            # Run traditional refinement if quality is still below threshold
+            # Quality threshold check - rely on ContextualRefiner and UNFIXABLE recovery
             if current_quality_score < settings.REFINEMENT_QUALITY_THRESHOLD:
-                print("Running additional traditional refinement...")
-                refined_data, final_quality_report = self.refiner.refine(final_validated_data, text_content, chunks, text_metadata)
-                print(f"Final quality score: {final_quality_report['quality_score']:.2f}% ({final_quality_report['error_count']} errors)")
-                # Extract just the segments without chunk indices for return
-                final_segments = [segment for segment, chunk_idx in refined_data]
-            else:
-                print(f"Quality acceptable after UNFIXABLE recovery ({current_quality_score:.1f}%).")
-                # Extract just the segments without chunk indices for return
-                final_segments = [segment for segment, chunk_idx in final_validated_data]
+                print(f"Quality below threshold ({current_quality_score:.1f}% < {settings.REFINEMENT_QUALITY_THRESHOLD}%), but relying on ContextualRefiner.")
+                
+            print(f"Final quality score: {current_quality_score:.1f}% (using ContextualRefiner + UNFIXABLE recovery)")
+            # Extract just the segments without chunk indices for return
+            final_segments = [segment for segment, chunk_idx in final_validated_data]
                 
         except Exception as e:
             import traceback
@@ -336,26 +399,112 @@ class TextStructurer:
         
         return [p.strip() for p in paragraphs if p.strip()]
 
-    def _fallback_chunk_processing(self, chunk, text_metadata):
+    def _fallback_chunk_processing(self, chunk, text_metadata, rolling_context=None):
         """Complete fallback processing for a chunk when all else fails."""
-        self.logger.info("Using complete fallback processing")
+        self.logger.info("Using complete fallback processing with rolling context support")
         
         # Simple text splitting
         paragraphs = self._fallback_text_splitting(chunk)
         
-        # Basic speaker attribution without LLM
+        # Enhanced speaker attribution using rolling context
         segments = []
-        for paragraph in paragraphs:
-            speaker = "narrator"  # Default to narrator
+        recent_speakers = rolling_context.get('recent_speakers', []) if rolling_context else []
+        
+        for i, paragraph in enumerate(paragraphs):
             text = paragraph.strip()
             
-            # Very basic dialogue detection
+            # Enhanced dialogue detection with context awareness
             if '"' in text or '"' in text or '"' in text:
-                speaker = "AMBIGUOUS"
+                # Has dialogue markers - try to use context
+                if recent_speakers and i > 0:
+                    # Use turn-taking with recent speakers
+                    speaker = recent_speakers[-1] if len(recent_speakers) % 2 == 1 else "AMBIGUOUS"
+                else:
+                    speaker = "AMBIGUOUS"
+            else:
+                # No dialogue markers - likely narrator
+                speaker = "narrator"
             
             segments.append({"speaker": speaker, "text": text})
         
         return segments
+    
+    def _merge_sliding_window_results(self, existing_segments, new_segments, window):
+        """
+        Merge results from sliding window processing, handling overlaps intelligently.
+        
+        Args:
+            existing_segments: Previously processed segments
+            new_segments: New segments from current window
+            window: Window metadata for overlap detection
+            
+        Returns:
+            Merged list of segments
+        """
+        if not existing_segments:
+            return new_segments
+        
+        if not new_segments:
+            return existing_segments
+        
+        # For sliding windows, we need to be careful about overlaps
+        # For now, use simple concatenation with basic deduplication
+        # This could be enhanced with more sophisticated overlap detection
+        
+        # Simple approach: compare text content to avoid exact duplicates
+        existing_texts = {segment['text'] for segment in existing_segments}
+        unique_new_segments = []
+        
+        for segment in new_segments:
+            if segment['text'] not in existing_texts:
+                unique_new_segments.append(segment)
+        
+        return existing_segments + unique_new_segments
+    
+    def _fallback_window_processing(self, window, text_metadata, rolling_context):
+        """
+        Fallback processing for when window processing fails.
+        
+        Args:
+            window: Window that failed to process
+            text_metadata: Text metadata
+            rolling_context: Rolling context for continuity
+            
+        Returns:
+            List of fallback segments
+        """
+        task_lines = window['task_lines']
+        fallback_segments = []
+        
+        for line in task_lines:
+            # Simple fallback: assign narrator to all lines
+            fallback_segments.append({
+                "speaker": "narrator",
+                "text": line
+            })
+        
+        return fallback_segments
+    
+    def _create_fallback_segments_from_window(self, window):
+        """
+        Create fallback segments when all processing fails.
+        
+        Args:
+            window: Window to create segments from
+            
+        Returns:
+            List of basic segments
+        """
+        task_lines = window['task_lines']
+        fallback_segments = []
+        
+        for line in task_lines:
+            fallback_segments.append({
+                "speaker": "UNFIXABLE",
+                "text": line
+            })
+        
+        return fallback_segments
     
     def _validate_segment_integrity(self, segments):
         """
