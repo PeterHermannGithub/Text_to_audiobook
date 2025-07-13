@@ -9,8 +9,8 @@ import os
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
 from src.text_structurer import TextStructurer
-from src.contextual_refiner import ContextualRefiner
-from src.simplified_validator import SimplifiedValidator
+from src.refinement.contextual_refiner import ContextualRefiner
+from src.validation.validator import SimplifiedValidator
 import spacy
 
 def test_complete_pipeline():
@@ -177,8 +177,8 @@ def test_contextual_refiner_independently():
     }
     
     # Initialize components
-    from src.llm_orchestrator import LLMOrchestrator
-    llm = LLMOrchestrator({'engine': 'local', 'local_model': 'mistral'})
+    from src.attribution.llm.orchestrator import LLMOrchestrator
+    llm = LLMOrchestrator({'engine': 'local', 'local_model': 'deepseek-v2:16b'})
     refiner = ContextualRefiner(llm)
     
     print("Test segments before refinement:")

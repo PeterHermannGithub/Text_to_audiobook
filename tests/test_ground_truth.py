@@ -25,12 +25,12 @@ from typing import Dict, List, Any
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from src.text_structurer import TextStructurer
-from src.simplified_validator import SimplifiedValidator
-from src.rule_based_attributor import RuleBasedAttributor
-from src.deterministic_segmenter import DeterministicSegmenter
-from src.unfixable_recovery import UnfixableRecoverySystem
-from src.output_formatter import OutputFormatter
-from src.preprocessor import TextPreprocessor
+from src.validation.validator import SimplifiedValidator
+from src.attribution.rule_based_attributor import RuleBasedAttributor
+from src.text_processing.segmentation.deterministic_segmenter import DeterministicSegmenter
+from src.attribution.unfixable_recovery import UnfixableRecoverySystem
+from src.output.output_formatter import OutputFormatter
+from src.text_processing.preprocessor import TextPreprocessor
 from config import settings
 
 class GroundTruthTestSuite(unittest.TestCase):

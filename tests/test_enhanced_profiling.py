@@ -7,7 +7,7 @@ import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
-from src.preprocessor import TextPreprocessor, CharacterProfile
+from src.text_processing.preprocessor import TextPreprocessor, CharacterProfile
 import spacy
 
 def test_character_profile_class():

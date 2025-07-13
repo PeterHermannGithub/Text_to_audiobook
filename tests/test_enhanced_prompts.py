@@ -7,8 +7,8 @@ import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
-from src.prompt_factory import PromptFactory
-from src.preprocessor import TextPreprocessor
+from src.attribution.llm.prompt_factory import PromptFactory
+from src.text_processing.preprocessor import TextPreprocessor
 import spacy
 
 def test_enhanced_prompt_generation():

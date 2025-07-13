@@ -2,7 +2,7 @@
 
 # LLM Configuration
 OLLAMA_URL = "http://localhost:11434/api/generate"
-DEFAULT_LOCAL_MODEL = "mistral"
+DEFAULT_LOCAL_MODEL = "deepseek-v2:16b"
 GCP_LLM_MODEL = "gemini-1.0-pro"
 DEFAULT_LLM_ENGINE = "local"
 GCP_LOCATION = "us-central1"
