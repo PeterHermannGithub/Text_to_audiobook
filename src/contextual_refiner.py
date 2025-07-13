@@ -21,7 +21,7 @@ class ContextualRefiner:
         
     def refine_ambiguous_speakers(self, structured_segments: List[Dict[str, Any]], text_metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
-        Refine segments with AMBIGUOUS speaker attributions using contextual memory.
+        Refine segments with AMBIGUOUS or problematic speaker attributions using contextual memory.
         
         Args:
             structured_segments: List of segments with speaker/text
@@ -32,24 +32,40 @@ class ContextualRefiner:
         """
         self.logger.info(f"Starting contextual refinement on {len(structured_segments)} segments")
         
-        # Find all AMBIGUOUS segments
-        ambiguous_indices = []
+        # Find all segments that need refinement (AMBIGUOUS + dialogue misattributed as Unfixable)
+        refinement_indices = []
         for i, segment in enumerate(structured_segments):
-            if segment.get('speaker') == 'AMBIGUOUS':
-                ambiguous_indices.append(i)
+            speaker = segment.get('speaker', '').strip()
+            text = segment.get('text', '').strip()
+            errors = segment.get('errors', [])
+            
+            # Standard AMBIGUOUS segments
+            if speaker == 'AMBIGUOUS':
+                refinement_indices.append(i)
+            # Unfixable segments that contain dialogue (likely misclassified)
+            elif speaker.lower() in ['unfixable', 'UNFIXABLE'] and self._is_dialogue_text(text):
+                self.logger.debug(f"Found Unfixable dialogue segment {i}: {repr(text[:50])}")
+                refinement_indices.append(i)
+            # Segments with dialogue_as_narrator errors (narrator assigned to dialogue)
+            elif 'dialogue_as_narrator' in errors and self._is_dialogue_text(text):
+                self.logger.debug(f"Found dialogue_as_narrator error segment {i}: {repr(text[:50])}")
+                refinement_indices.append(i)
         
-        if not ambiguous_indices:
-            self.logger.info("No AMBIGUOUS segments found, skipping refinement")
+        if not refinement_indices:
+            self.logger.info("No AMBIGUOUS or problematic segments found, skipping refinement")
             return structured_segments
         
-        self.logger.info(f"Found {len(ambiguous_indices)} AMBIGUOUS segments to refine")
+        ambiguous_count = sum(1 for i in refinement_indices if structured_segments[i].get('speaker') == 'AMBIGUOUS')
+        unfixable_count = len(refinement_indices) - ambiguous_count
+        self.logger.info(f"Found {ambiguous_count} AMBIGUOUS and {unfixable_count} problematic segments to refine")
         
-        # Process each ambiguous segment
+        # Process each problematic segment
         refined_segments = structured_segments.copy()
         successful_refinements = 0
         
-        for segment_idx in ambiguous_indices:
-            self.logger.debug(f"Refining segment {segment_idx}: {repr(refined_segments[segment_idx]['text'][:100])}")
+        for segment_idx in refinement_indices:
+            old_speaker = refined_segments[segment_idx]['speaker']
+            self.logger.debug(f"Refining segment {segment_idx} ({old_speaker}): {repr(refined_segments[segment_idx]['text'][:100])}")
             
             # Build conversation context
             context = self._build_conversation_context(refined_segments, segment_idx)
@@ -59,8 +75,11 @@ class ContextualRefiner:
                 context, refined_segments[segment_idx]['text'], text_metadata
             )
             
-            if refined_speaker and refined_speaker != 'AMBIGUOUS':
-                old_speaker = refined_segments[segment_idx]['speaker']
+            if refined_speaker and refined_speaker not in ['AMBIGUOUS', 'UNFIXABLE']:
+                # Clean up any error flags since we successfully resolved them
+                if 'errors' in refined_segments[segment_idx]:
+                    refined_segments[segment_idx]['errors'] = []
+                
                 refined_segments[segment_idx]['speaker'] = refined_speaker
                 refined_segments[segment_idx]['refined'] = True
                 refined_segments[segment_idx]['refinement_method'] = 'contextual_memory'
@@ -68,9 +87,15 @@ class ContextualRefiner:
                 self.logger.debug(f"Refined segment {segment_idx}: {old_speaker} -> {refined_speaker}")
                 successful_refinements += 1
             else:
-                self.logger.debug(f"Could not refine segment {segment_idx}, keeping AMBIGUOUS")
+                # If we couldn't refine but it was Unfixable dialogue, convert to AMBIGUOUS
+                if old_speaker.lower() in ['unfixable'] and self._is_dialogue_text(refined_segments[segment_idx]['text']):
+                    refined_segments[segment_idx]['speaker'] = 'AMBIGUOUS'
+                    refined_segments[segment_idx]['refinement_method'] = 'unfixable_to_ambiguous'
+                    self.logger.debug(f"Converted segment {segment_idx}: {old_speaker} -> AMBIGUOUS")
+                else:
+                    self.logger.debug(f"Could not refine segment {segment_idx}, keeping {old_speaker}")
         
-        self.logger.info(f"Successfully refined {successful_refinements}/{len(ambiguous_indices)} AMBIGUOUS segments")
+        self.logger.info(f"Successfully refined {successful_refinements}/{len(refinement_indices)} problematic segments")
         return refined_segments
     
     def _build_conversation_context(self, segments: List[Dict[str, Any]], target_index: int) -> Dict[str, Any]:

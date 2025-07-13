@@ -170,36 +170,42 @@ class TextPreprocessor:
         dialogue_pattern = r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\s+(' + '|'.join(self.dialogue_tags) + r')'
         for match in re.finditer(dialogue_pattern, text):
             name = match.group(1).strip()
-            if self._is_valid_character_name(name, doc, match.start(), match.end()):
-                names.add(name)
+            normalized_name = self._normalize_character_name(name)
+            if normalized_name and self._is_valid_character_name(normalized_name, doc, match.start(), match.end()):
+                names.add(normalized_name)
         
         # Pattern 2: Possessives (e.g., John's)
         possessive_pattern = r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\'s\s'
         for match in re.finditer(possessive_pattern, text):
             name = match.group(1).strip()
-            if self._is_valid_character_name(name, doc, match.start(), match.end()):
-                names.add(name)
+            normalized_name = self._normalize_character_name(name)
+            if normalized_name and self._is_valid_character_name(normalized_name, doc, match.start(), match.end()):
+                names.add(normalized_name)
         
         # Pattern 3: Names with titles
         for title_pattern in self.title_patterns:
             pattern = title_pattern + r'\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)'
             for match in re.finditer(pattern, text):
                 name = match.group(2).strip() if match.lastindex >= 2 else match.group(1).strip()
-                if self._is_valid_character_name(name, doc, match.start(), match.end()):
-                    names.add(name)
+                normalized_name = self._normalize_character_name(name)
+                if normalized_name and self._is_valid_character_name(normalized_name, doc, match.start(), match.end()):
+                    names.add(normalized_name)
         
         # Pattern 4: Script format names (CHARACTER:)
         script_pattern = r'^(?:–|\s|-)?\s*([A-Z][a-zA-Z0-9_\s]+):\s*'
         for match in re.finditer(script_pattern, text, re.MULTILINE):
             name = match.group(1).strip()
-            if self._is_valid_character_name(name, doc, match.start(), match.end()):
-                names.add(name)
+            normalized_name = self._normalize_character_name(name)
+            if normalized_name and self._is_valid_character_name(normalized_name, doc, match.start(), match.end()):
+                names.add(normalized_name)
         
         # Pattern 5: spaCy NER entities (if available)
         if doc:
             for ent in doc.ents:
                 if ent.label_ == 'PERSON' and len(ent.text.strip()) > 2:
-                    names.add(ent.text.strip())
+                    normalized_name = self._normalize_character_name(ent.text.strip())
+                    if normalized_name:
+                        names.add(normalized_name)
         
         return names
     
@@ -534,3 +540,106 @@ class TextPreprocessor:
         structure['complexity_score'] = sum(complexity_factors) / len(complexity_factors)
         
         return structure
+    
+    def _normalize_character_name(self, raw_name: str) -> str:
+        """
+        Normalize character names by removing artifacts, formatting issues, and honorifics.
+        
+        Args:
+            raw_name: Raw character name that may contain artifacts
+            
+        Returns:
+            Cleaned and normalized character name, or empty string if invalid
+        """
+        if not raw_name:
+            return ""
+        
+        name = raw_name
+        
+        # Step 1: Remove newlines, tabs, and excessive whitespace
+        name = re.sub(r'[\n\r\t]+', ' ', name)
+        name = re.sub(r'\s+', ' ', name)
+        name = name.strip()
+        
+        # Step 2: Remove superscripts and subscripts (common in ebooks)
+        # Remove Unicode superscript/subscript characters
+        superscripts = '⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ᴬᴮᴰᴱᴳᴴᴵᴶᴷᴸᴹᴺᴼᴾᴿᵀᵁⱽᵂᵃᵇᶜᵈᵉᶠᵍʰⁱʲᵏˡᵐⁿᵒᵖʳˢᵗᵘᵛʷˣʸᶻ'
+        subscripts = '₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎ₐₑₕᵢⱼₖₗₘₙₒₚᵣₛₜᵤᵥₓ'
+        for char in superscripts + subscripts:
+            name = name.replace(char, '')
+        
+        # Step 3: Remove common honorifics and titles (but preserve formal titles)
+        honorifics_to_remove = [
+            r'\b(?:Jr\.?|Sr\.?|III?|IV|V|VI|VII|VIII|IX|X)\b',  # Generational suffixes
+            r'\b(?:-san|-kun|-chan|-sama|-senpai|-sensei)\b',    # Japanese honorifics
+            r'\b(?:-nim|-ssi)\b',                               # Korean honorifics
+            r'\s*\([^)]*\)\s*',                                 # Parenthetical additions
+            r'\s*\[[^\]]*\]\s*',                               # Bracketed additions
+        ]
+        
+        for pattern in honorifics_to_remove:
+            name = re.sub(pattern, '', name, flags=re.IGNORECASE)
+        
+        # Step 4: Remove excessive punctuation but preserve apostrophes in names
+        # Remove leading/trailing punctuation except apostrophes
+        name = re.sub(r'^[^\w\']+|[^\w\']+$', '', name)
+        
+        # Remove multiple consecutive punctuation marks
+        name = re.sub(r'[^\w\s\']{2,}', ' ', name)
+        
+        # Step 5: Handle special formatting artifacts
+        # Remove zero-width characters and other invisible Unicode
+        invisible_chars = '\u200b\u200c\u200d\u2060\ufeff'
+        for char in invisible_chars:
+            name = name.replace(char, '')
+        
+        # Remove HTML entities if present
+        name = re.sub(r'&[a-zA-Z]+;', '', name)
+        
+        # Step 6: Fix capitalization issues
+        # Split by spaces and capitalize each word properly
+        words = []
+        for word in name.split():
+            if word:
+                # Handle names with apostrophes (e.g., O'Connor, D'Artagnan)
+                if "'" in word:
+                    parts = word.split("'")
+                    capitalized_parts = []
+                    for i, part in enumerate(parts):
+                        if part:
+                            if i == 0 or len(part) > 1:  # Full capitalization for first part or long parts
+                                capitalized_parts.append(part.capitalize())
+                            else:  # Keep short parts after apostrophe lowercase (e.g., 'd)
+                                capitalized_parts.append(part.lower())
+                        else:
+                            capitalized_parts.append(part)
+                    words.append("'".join(capitalized_parts))
+                else:
+                    words.append(word.capitalize())
+        
+        name = ' '.join(words)
+        
+        # Step 7: Final validation and cleanup
+        # Remove if the result is too short, too long, or contains invalid patterns
+        if len(name) < 2 or len(name) > 50:
+            return ""
+        
+        # Check for invalid patterns that suggest this isn't a real name
+        invalid_patterns = [
+            r'^\d+$',           # Pure numbers
+            r'^[^\w\s]+$',      # Pure punctuation
+            r'chapter|section|page|book|volume',  # Document structure words
+            r'http[s]?://',     # URLs
+            r'@\w+',            # Email addresses or handles
+            r'^[A-Z]{3,}$',     # All caps abbreviations (unless exactly 2 chars)
+        ]
+        
+        for pattern in invalid_patterns:
+            if re.search(pattern, name, re.IGNORECASE):
+                return ""
+        
+        # Step 8: Handle special cases for compound names
+        # Ensure compound names are properly formatted
+        name = re.sub(r'\s+', ' ', name)  # Final whitespace cleanup
+        
+        return name.strip()

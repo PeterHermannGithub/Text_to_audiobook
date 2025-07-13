@@ -83,72 +83,91 @@ class PromptFactory:
         
         num_lines = len(numbered_lines)
         
-        return f"""TASK: Identify the speaker for each numbered line below.
+        return f"""🎯 SPEAKER CLASSIFICATION TASK
 
-RULES:
-1. Return ONLY a JSON array with exactly {num_lines} speaker names
-2. Use these speaker types:
-   - "narrator" for descriptive/narrative text
-   - Character names for dialogue (e.g. "John", "Sarah")
-   - "AMBIGUOUS" if unclear who is speaking{character_context}{format_context}
+⚠️ CRITICAL: You MUST output ONLY a valid JSON array. No explanations, no text, ONLY the JSON array.
 
-CRITICAL DISTINCTION:
-- If a line DESCRIBES a character's actions/state → "narrator"
-- If a line contains words SPOKEN by a character → character name
-- Character name in text ≠ character speaking!
+📋 FORMAT REQUIREMENT:
+Your response must be EXACTLY this format: ["speaker1", "speaker2", "speaker3", ...]
+- Must be valid JSON
+- Must contain exactly {num_lines} strings
+- Must use double quotes, not single quotes
+- No trailing commas
 
-EXAMPLES:
+👥 SPEAKER TYPES:
+- "narrator" = Text describing actions, thoughts, or scenes
+- Character names = Text spoken by characters (e.g., "John", "Sarah")  
+- "AMBIGUOUS" = Cannot determine who is speaking
 
+🔥 KEY RULE: Character mentioned ≠ Character speaking
+- "John walked to the door" → "narrator" (describes John)
+- "I'm leaving," John said → "John" (John speaks)
+
+📚 EXAMPLES WITH EXACT REQUIRED OUTPUT:
+
+Example 1:
 [INPUT]
-1. The old castle stood before them.
-2. "Let's go inside," Sarah said.
-3. John nodded in agreement.
-[OUTPUT] ["narrator", "Sarah", "narrator"]
+1. The storm was approaching fast.
+2. "We need to take shelter," Sarah warned.
+3. Everyone nodded in agreement.
+[REQUIRED OUTPUT] ["narrator", "Sarah", "narrator"]
 
+Example 2:
+[INPUT]  
+1. ALICE: This is impossible!
+2. "What do you mean?"
+3. The room fell silent.
+[REQUIRED OUTPUT] ["Alice", "AMBIGUOUS", "narrator"]
+
+Example 3:
 [INPUT]
-1. JOHN: I can't believe this.
-2. "What do you mean?" 
-3. The silence stretched between them.
-[OUTPUT] ["John", "AMBIGUOUS", "narrator"]
+1. "Ready?" Tom asked nervously.
+2. Lisa checked her equipment once more.
+3. "Let's do this."
+[REQUIRED OUTPUT] ["Tom", "narrator", "AMBIGUOUS"]
 
+Example 4 - CHARACTER NAME vs SPEAKER:
 [INPUT]
-1. "Hello there," John said.
-2. Mary smiled back at him.
-3. "How are you today?"
-[OUTPUT] ["John", "narrator", "AMBIGUOUS"]
+1. Marcus stepped into the arena.
+2. The crowd was cheering for Marcus.
+3. "I won't lose!" Marcus shouted.
+4. Marcus's heart was pounding.
+[REQUIRED OUTPUT] ["narrator", "narrator", "Marcus", "narrator"]
 
-[INPUT - CHARACTER NAME vs SPEAKER EXAMPLES]
-1. John walked toward the door.
-2. John's blood was boiling with anger.
-3. "I'm ready," John said.
-4. John shot forward like a meteor.
-[OUTPUT] ["narrator", "narrator", "John", "narrator"]
+Example 5 - MIXED CONTENT:
+[INPUT]
+1. [System alert: Danger detected]
+2. "Help us!"
+3. The explosion shook the building.
+[REQUIRED OUTPUT] ["AMBIGUOUS", "AMBIGUOUS", "narrator"]{character_context}{format_context}
 
-[INPUT - MIXED CONTENT EXAMPLES]
-1. [You dare...!]
-2. "Next."
-3. The magic power was affecting John.
-[OUTPUT] ["AMBIGUOUS", "AMBIGUOUS", "narrator"]
-
-NOW CLASSIFY THESE {num_lines} LINES:
+🎯 YOUR TASK - CLASSIFY THESE {num_lines} LINES:
 
 {numbered_display.strip()}
 
-JSON ARRAY:"""
+⚠️ RESPOND WITH ONLY THE JSON ARRAY - NO OTHER TEXT:"""
 
     def create_json_correction_prompt(self, malformed_json_text):
         """
         Creates a prompt to instruct the LLM to correct malformed JSON output.
         """
-        return f"""The previous response was malformed JSON. You MUST correct it and provide a valid JSON array of strings.
+        return f"""🚨 JSON FIX REQUIRED
 
-Here is the malformed JSON that needs correction:
----
+Your previous response was not valid JSON. You MUST fix it and respond with ONLY valid JSON.
+
+❌ BROKEN JSON:
 {malformed_json_text}
----
 
-Your response MUST be ONLY the corrected JSON array of strings. Do NOT include any other text, explanations, or conversational filler. The JSON must be perfectly valid and complete, do NOT truncate it.
-"""
+✅ REQUIRED FORMAT: 
+["speaker1", "speaker2", "speaker3"]
+
+🔧 COMMON FIXES NEEDED:
+- Add missing quotes around strings
+- Remove trailing commas
+- Use double quotes, not single
+- Ensure proper array format
+
+⚠️ RESPOND WITH ONLY THE CORRECTED JSON ARRAY - NO OTHER TEXT:"""
 
     def create_character_description_prompt(self, character_name, dialogue_sample):
         """

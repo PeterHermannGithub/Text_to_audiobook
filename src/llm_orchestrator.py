@@ -100,18 +100,23 @@ class LLMOrchestrator:
         max_retries = 3  # Increased from 2
         expected_count = len(numbered_lines)
         
-        # Pre-validate inputs
-        if expected_count > 50:  # Large chunks might cause issues
-            self.logger.warning(f"Large input chunk ({expected_count} lines), splitting for better processing")
-            return self._process_large_chunk(numbered_lines, text_metadata)
+        # Pre-validate inputs - Use much smaller chunks for better accuracy
+        if expected_count > 8:  # Reduced from 50 to 8 for better LLM performance
+            self.logger.info(f"Input chunk has {expected_count} lines, splitting into smaller chunks for better accuracy")
+            return self._process_contextual_chunks(numbered_lines, text_metadata)
         
+        previous_response = None
         for attempt in range(max_retries + 1):
             try:
                 # Build classification prompt with attempt-specific optimizations
-                prompt = self._build_optimized_prompt(numbered_lines, text_metadata, attempt)
+                prompt = self._build_optimized_prompt(numbered_lines, text_metadata, attempt, previous_response)
                 
                 # Get LLM response with enhanced validation
                 response_text = self._get_llm_response_with_validation(prompt)
+                
+                # Store response for potential correction in next attempt
+                if response_text:
+                    previous_response = response_text
                 
                 if not response_text or not response_text.strip():
                     self.logger.warning(f"Attempt {attempt + 1}: Empty response from LLM")
@@ -152,30 +157,81 @@ class LLMOrchestrator:
     
     def _process_large_chunk(self, numbered_lines, text_metadata):
         """
-        Process large chunks by splitting them into smaller pieces.
+        Legacy large chunk processing - replaced by contextual chunks.
         """
-        chunk_size = 25  # Process in chunks of 25 lines
+        return self._process_contextual_chunks(numbered_lines, text_metadata)
+    
+    def _process_contextual_chunks(self, numbered_lines, text_metadata):
+        """
+        Process lines in small contextual chunks with speaker memory for better accuracy.
+        """
+        chunk_size = 6  # Reduced from 25 to 6 for much better LLM performance
         all_speakers = []
+        speaker_context = []  # Track recent speakers for context
+        
+        self.logger.info(f"Processing {len(numbered_lines)} lines in chunks of {chunk_size}")
         
         for i in range(0, len(numbered_lines), chunk_size):
             chunk = numbered_lines[i:i + chunk_size]
-            chunk_speakers = self.get_speaker_classifications(chunk, text_metadata)
-            all_speakers.extend(chunk_speakers)
+            
+            # Add context from previous chunks for continuity
+            enhanced_metadata = self._add_speaker_context(text_metadata, speaker_context)
+            
+            # Process the small chunk
+            chunk_speakers = self.get_speaker_classifications(chunk, enhanced_metadata)
+            
+            if chunk_speakers:
+                all_speakers.extend(chunk_speakers)
+                
+                # Update speaker context for next chunk
+                speaker_context = self._update_speaker_context(speaker_context, chunk_speakers)
+            else:
+                # Fallback if chunk processing fails
+                self.logger.warning(f"Chunk {i//chunk_size + 1} failed, using fallback")
+                fallback_speakers = ["AMBIGUOUS"] * len(chunk)
+                all_speakers.extend(fallback_speakers)
         
         return all_speakers
     
-    def _build_optimized_prompt(self, numbered_lines, text_metadata, attempt):
+    def _add_speaker_context(self, text_metadata, speaker_context):
         """
-        Build optimized prompt based on attempt number.
+        Add recent speaker context to metadata for better continuity.
+        """
+        enhanced_metadata = text_metadata.copy() if text_metadata else {}
+        
+        if speaker_context:
+            # Add recent speakers to context
+            enhanced_metadata['recent_speakers'] = speaker_context[-6:]  # Last 6 speakers
+            enhanced_metadata['speaker_context'] = f"Recent speakers in conversation: {', '.join(speaker_context[-6:])}"
+        
+        return enhanced_metadata
+    
+    def _update_speaker_context(self, speaker_context, new_speakers):
+        """
+        Update speaker context with newly classified speakers.
+        """
+        # Add non-generic speakers to context
+        valid_speakers = [s for s in new_speakers if s not in ['narrator', 'AMBIGUOUS', 'UNFIXABLE']]
+        speaker_context.extend(valid_speakers)
+        
+        # Keep only last 10 speakers to prevent context bloat
+        return speaker_context[-10:]
+    
+    def _build_optimized_prompt(self, numbered_lines, text_metadata, attempt, previous_response=None):
+        """
+        Build optimized prompt based on attempt number and previous failures.
         """
         if attempt == 0:
-            # First attempt - use standard prompt
+            # First attempt - use enhanced bulletproof prompt
             return self.build_classification_prompt(numbered_lines, text_metadata)
         elif attempt == 1:
-            # Second attempt - simplified prompt
+            # Second attempt - simplified prompt with fewer examples
             return self._build_simplified_prompt(numbered_lines, text_metadata)
+        elif attempt == 2 and previous_response:
+            # Third attempt - send back malformed JSON for correction
+            return self.prompt_factory.create_json_correction_prompt(previous_response[:500])  # Limit length
         else:
-            # Final attempt - minimal prompt
+            # Final attempt - ultra-simple format
             return self._build_minimal_prompt(numbered_lines, text_metadata)
     
     def _build_simplified_prompt(self, numbered_lines, text_metadata):
@@ -232,20 +288,34 @@ JSON:"""
     
     def _parse_speaker_array_enhanced(self, response_text, expected_count, attempt):
         """
-        Enhanced speaker array parsing with error recovery.
+        Bulletproof speaker array parsing with multi-stage validation and progressive fallback.
         """
-        # Try standard parsing first
-        speakers = self._parse_speaker_array(response_text, expected_count)
+        if not response_text or not response_text.strip():
+            self.logger.warning("Empty LLM response")
+            return None
+        
+        # Stage 1: Multi-step JSON validation and parsing
+        speakers = self._bulletproof_json_parse(response_text, expected_count, attempt)
         if speakers and len(speakers) == expected_count:
             return speakers
         
-        # Try alternative parsing methods
-        if attempt > 0:
+        # Stage 2: Alternative parsing strategies based on attempt number
+        if attempt == 1:
             speakers = self._parse_speaker_array_alternative(response_text, expected_count)
-            if speakers:
-                return speakers
+        elif attempt == 2:
+            speakers = self._parse_fix_json_format(response_text, expected_count)
+        elif attempt >= 3:
+            speakers = self._parse_ultra_simple_format(response_text, expected_count)
         
-        return speakers
+        if speakers and len(speakers) == expected_count:
+            return speakers
+        
+        # Stage 3: Final fallback with padding/truncation
+        if speakers and len(speakers) > 0:
+            self.logger.warning(f"Partial parse success: got {len(speakers)}, expected {expected_count}")
+            return self._smart_padding_truncation(speakers, expected_count)
+        
+        return None
     
     def _parse_speaker_array_alternative(self, response_text, expected_count):
         """
@@ -279,6 +349,204 @@ JSON:"""
         
         return None
     
+    def _bulletproof_json_parse(self, response_text, expected_count, attempt):
+        """
+        Multi-stage JSON validation with comprehensive error handling.
+        """
+        # Step 1: Basic JSON validation
+        try:
+            # Try to parse the entire response as JSON
+            data = json.loads(response_text.strip())
+            if isinstance(data, list) and len(data) == expected_count:
+                if all(isinstance(item, str) for item in data):
+                    self.logger.debug(f"Direct JSON parse successful (attempt {attempt + 1})")
+                    return data
+        except json.JSONDecodeError:
+            pass
+        
+        # Step 2: Extract JSON array pattern
+        json_candidates = self._extract_json_candidates(response_text)
+        for candidate in json_candidates:
+            try:
+                data = json.loads(candidate)
+                if isinstance(data, list) and all(isinstance(item, str) for item in data):
+                    if len(data) == expected_count:
+                        self.logger.debug(f"Pattern extraction parse successful (attempt {attempt + 1})")
+                        return data
+                    elif len(data) > 0:
+                        # Store partial result for potential use
+                        self.logger.debug(f"Partial pattern match: {len(data)} items")
+                        return data
+            except json.JSONDecodeError:
+                continue
+        
+        # Step 3: Clean and retry JSON parsing
+        cleaned_response = self._clean_json_response(response_text)
+        if cleaned_response != response_text:
+            try:
+                data = json.loads(cleaned_response)
+                if isinstance(data, list) and all(isinstance(item, str) for item in data):
+                    self.logger.debug(f"Cleaned JSON parse successful (attempt {attempt + 1})")
+                    return data
+            except json.JSONDecodeError:
+                pass
+        
+        return None
+    
+    def _extract_json_candidates(self, text):
+        """
+        Extract potential JSON arrays from text using multiple patterns.
+        """
+        candidates = []
+        
+        # Pattern 1: Look for [.*] array patterns
+        array_patterns = [
+            r'\[(?:[^[\]]*(?:"[^"]*"[^[\]]*)*)*\]',  # Basic array pattern
+            r'\[(?:\s*"[^"]*"\s*,?\s*)*\]',          # String array pattern
+            r'\[(?:\s*"[^"]*"\s*(?:,\s*"[^"]*"\s*)*)\]'  # Proper comma-separated strings
+        ]
+        
+        for pattern in array_patterns:
+            matches = re.findall(pattern, text, re.DOTALL)
+            candidates.extend(matches)
+        
+        # Pattern 2: Look for JSON-like structures in code blocks
+        code_block_patterns = [
+            r'```(?:json)?\s*(\[.*?\])\s*```',
+            r'`(\[.*?\])`',
+            r'JSON ARRAY:\s*(\[.*?\])',
+            r'OUTPUT:\s*(\[.*?\])',
+        ]
+        
+        for pattern in code_block_patterns:
+            matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
+            candidates.extend(matches)
+        
+        # Pattern 3: Line-by-line extraction for simple lists
+        lines = text.split('\n')
+        potential_arrays = []
+        current_array = []
+        
+        for line in lines:
+            line = line.strip()
+            # Look for quoted strings that might be array elements
+            if re.match(r'^"[^"]*"$', line):
+                current_array.append(line)
+            elif line == '[' and not current_array:
+                current_array = ['[']
+            elif line == ']' and current_array and current_array[0] == '[':
+                current_array.append(']')
+                array_str = ''.join(current_array) if len(current_array) == 2 else '[' + ', '.join(current_array[1:-1]) + ']'
+                candidates.append(array_str)
+                current_array = []
+            elif current_array and current_array[0] == '[':
+                current_array.append(line.rstrip(','))
+        
+        # Remove duplicates and return
+        return list(set(candidates))
+    
+    def _clean_json_response(self, response_text):
+        """
+        Clean common JSON formatting issues in LLM responses.
+        """
+        # Remove common prefixes/suffixes
+        text = response_text.strip()
+        
+        # Remove explanatory text before/after JSON
+        prefixes_to_remove = [
+            r'^.*?(?=\[)',  # Remove everything before first [
+            r'^[^[]*',      # Alternative: remove non-bracket content at start
+        ]
+        
+        for pattern in prefixes_to_remove:
+            text = re.sub(pattern, '', text, flags=re.DOTALL)
+            if text.startswith('['):
+                break
+        
+        # Remove explanatory text after JSON
+        if ']' in text:
+            bracket_pos = text.rfind(']')
+            text = text[:bracket_pos + 1]
+        
+        # Fix common JSON issues
+        fixes = [
+            # Fix trailing commas
+            (r',\s*]', ']'),
+            (r',\s*}', '}'),
+            # Fix missing quotes around strings
+            (r'\[\s*([^"\[\]]+?)\s*\]', r'["\1"]'),
+            # Fix unquoted strings in arrays
+            (r'(?<=[\[,\s])([a-zA-Z_][a-zA-Z0-9_\s]*?)(?=[\],\s])', r'"\1"'),
+            # Fix single quotes to double quotes
+            (r"'([^']*)'", r'"\1"'),
+            # Fix extra spaces
+            (r'\s+', ' '),
+            # Fix missing commas between array elements
+            (r'"\s*"', '", "'),
+            # Fix bracket spacing
+            (r'\[\s+', '['),
+            (r'\s+\]', ']'),
+        ]
+        
+        for pattern, replacement in fixes:
+            text = re.sub(pattern, replacement, text)
+        
+        return text.strip()
+    
+    def _parse_fix_json_format(self, response_text, expected_count):
+        """
+        Attempt to fix malformed JSON and re-parse.
+        """
+        # This will be used for attempt 2 when we send back malformed JSON to LLM
+        # For now, use enhanced cleaning
+        cleaned = self._clean_json_response(response_text)
+        try:
+            data = json.loads(cleaned)
+            if isinstance(data, list):
+                return [str(item) for item in data]  # Convert all to strings
+        except json.JSONDecodeError:
+            pass
+        return None
+    
+    def _parse_ultra_simple_format(self, response_text, expected_count):
+        """
+        Parse ultra-simple format: one speaker per line.
+        """
+        lines = [line.strip() for line in response_text.split('\n') if line.strip()]
+        
+        # Filter out obvious non-speakers
+        speakers = []
+        for line in lines:
+            # Remove numbering if present
+            line = re.sub(r'^\d+\.\s*', '', line)
+            line = re.sub(r'^[-*]\s*', '', line)
+            
+            # Remove quotes if present
+            line = line.strip('"\'')
+            
+            if line and not line.lower().startswith(('output', 'result', 'answer')):
+                speakers.append(line)
+        
+        return speakers[:expected_count] if speakers else None
+    
+    def _smart_padding_truncation(self, speakers, expected_count):
+        """
+        Intelligently pad or truncate speaker array to match expected count.
+        """
+        if len(speakers) == expected_count:
+            return speakers
+        
+        if len(speakers) < expected_count:
+            # Pad with AMBIGUOUS
+            padded = speakers + ["AMBIGUOUS"] * (expected_count - len(speakers))
+            self.logger.info(f"Padded speaker array from {len(speakers)} to {expected_count}")
+            return padded
+        else:
+            # Truncate to expected count
+            truncated = speakers[:expected_count]
+            self.logger.warning(f"Truncated speaker array from {len(speakers)} to {expected_count}")
+            return truncated
+    
     def _validate_and_clean_speakers(self, speakers, text_metadata, numbered_lines=None):
         """
         Validate and clean speaker names, including fixing character name association errors.
@@ -292,20 +560,23 @@ JSON:"""
         for i, speaker in enumerate(speakers):
             speaker = speaker.strip().strip('"').strip("'")
             
+            # Apply character name normalization
+            normalized_speaker = self._normalize_speaker_name(speaker)
+            
             # Filter out obvious metadata
-            if self._is_metadata_speaker(speaker):
+            if self._is_metadata_speaker(normalized_speaker):
                 cleaned_speakers.append("narrator")
-            elif speaker.lower() in ['ambiguous', 'unclear', 'unknown']:
+            elif normalized_speaker.lower() in ['ambiguous', 'unclear', 'unknown']:
                 cleaned_speakers.append("AMBIGUOUS")
             else:
                 # Check for character name association errors
                 if numbered_lines and i < len(numbered_lines):
                     corrected_speaker = self._fix_character_association_error(
-                        speaker, numbered_lines[i], known_characters
+                        normalized_speaker, numbered_lines[i], known_characters
                     )
                     cleaned_speakers.append(corrected_speaker)
                 else:
-                    cleaned_speakers.append(speaker)
+                    cleaned_speakers.append(normalized_speaker)
         
         return cleaned_speakers
     
@@ -394,6 +665,71 @@ JSON:"""
         
         # Truncate if too long
         return speakers[:expected_count]
+    
+    def _normalize_speaker_name(self, speaker_name: str) -> str:
+        """
+        Normalize speaker names returned by LLM by removing artifacts and standardizing format.
+        
+        Args:
+            speaker_name: Raw speaker name from LLM
+            
+        Returns:
+            Normalized speaker name
+        """
+        if not speaker_name:
+            return ""
+            
+        name = speaker_name.strip()
+        
+        # Remove quotes and common artifacts
+        name = name.strip('"').strip("'").strip()
+        
+        # Remove newlines and excessive whitespace
+        name = re.sub(r'[\n\r\t]+', ' ', name)
+        name = re.sub(r'\s+', ' ', name)
+        
+        # Handle special LLM responses
+        if name.lower() in ['narrator', 'ambiguous', 'unfixable']:
+            return name.lower()
+        
+        # Remove common artifacts in LLM responses
+        artifacts_to_remove = [
+            r'\s*\([^)]*\)\s*',     # Parenthetical additions
+            r'\s*\[[^\]]*\]\s*',    # Bracketed additions  
+            r'\s*\{[^}]*\}\s*',     # Curly brace additions
+            r'^\s*speaker\s*[:=]\s*',  # "Speaker: Name" format
+            r'^\s*character\s*[:=]\s*',  # "Character: Name" format
+        ]
+        
+        for pattern in artifacts_to_remove:
+            name = re.sub(pattern, '', name, flags=re.IGNORECASE)
+        
+        # Clean up punctuation but preserve apostrophes
+        name = re.sub(r'^[^\w\']+|[^\w\']+$', '', name)
+        
+        # Proper capitalization for character names
+        if name and name not in ['narrator', 'ambiguous', 'unfixable']:
+            words = []
+            for word in name.split():
+                if word:
+                    # Handle names with apostrophes properly
+                    if "'" in word:
+                        parts = word.split("'")
+                        capitalized_parts = []
+                        for i, part in enumerate(parts):
+                            if part:
+                                if i == 0 or len(part) > 1:
+                                    capitalized_parts.append(part.capitalize())
+                                else:
+                                    capitalized_parts.append(part.lower())
+                            else:
+                                capitalized_parts.append(part)
+                        words.append("'".join(capitalized_parts))
+                    else:
+                        words.append(word.capitalize())
+            name = ' '.join(words)
+        
+        return name.strip()
     
     def _parse_speaker_array(self, response_text, expected_count):
         """

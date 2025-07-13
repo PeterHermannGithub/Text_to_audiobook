@@ -216,63 +216,120 @@ class SimplifiedValidator:
     
     def _calculate_quality_score(self, segments: List[Dict[str, Any]], errors: List[Dict[str, Any]], original_length: int) -> float:
         """
-        Calculate overall quality score using recalibrated progressive penalty system.
+        Calculate overall quality score using HARSH but realistic scoring.
         
-        Quality Bands:
-        - Excellent (90-100%): Professional-grade attribution with minimal issues
-        - Good (70-89%): High-quality attribution with minor corrections needed
-        - Fair (50-69%): Acceptable attribution requiring moderate refinement
-        - Poor (25-49%): Significant issues requiring major rework
-        - Critical (0-24%): Severe problems, major system failures
+        RECALIBRATED Quality Bands (Harsh but Truthful):
+        - Excellent (95-100%): Near-perfect attribution with <5% error rate
+        - Good (80-94%): High-quality attribution with <15% error rate  
+        - Fair (60-79%): Acceptable attribution with <30% error rate
+        - Poor (30-59%): Significant issues with 30-60% error rate
+        - Critical (0-29%): Severe problems with >60% error rate
+        
+        NOTE: This scoring is intentionally harsh to provide truthful quality assessment.
+        A 36% error rate should score ~40% (Poor), not 98% (Excellent).
         """
         
         if not segments:
             return 0.0
         
         total_segments = len(segments)
+        error_count = len(errors)
+        error_rate = error_count / total_segments if total_segments > 0 else 1.0
         
         # Calculate base attribution success rate
         successfully_attributed = sum(1 for seg in segments 
                                     if seg.get('speaker') not in ['AMBIGUOUS', 'UNFIXABLE', None, ''])
         attribution_success_rate = successfully_attributed / total_segments
         
-        # Start with base score from attribution success (60% of total score)
-        base_score = attribution_success_rate * 60.0
+        # HARSH SCORING: Error rate directly impacts quality
+        # If error rate is 36%, quality should be around 40% (64% penalty)
+        error_penalty_factor = min(1.0, error_rate * 2.0)  # Double penalty for errors
         
-        # Calculate error impact (30% of total score)
-        error_impact_score = self._calculate_error_impact(errors, total_segments)
+        # Start with attribution success, but apply harsh error penalty
+        base_score = attribution_success_rate * 100.0 * (1.0 - error_penalty_factor)
         
-        # Calculate content preservation score (10% of total score)
-        content_preservation_score = self._calculate_content_preservation(segments)
-        
-        # Combine scores
-        raw_score = base_score + error_impact_score + content_preservation_score
-        
-        # Apply ambiguity penalty (more lenient than before)
+        # Additional penalties for specific quality issues
         ambiguous_count = sum(1 for seg in segments if seg.get('speaker') == 'AMBIGUOUS')
+        unfixable_count = sum(1 for seg in segments if seg.get('speaker') == 'UNFIXABLE')
+        
         ambiguous_ratio = ambiguous_count / total_segments
+        unfixable_ratio = unfixable_count / total_segments
         
-        # Progressive ambiguity penalty - more forgiving
-        ambiguity_penalty = 0.0
-        if ambiguous_ratio > 0.5:  # More than 50% ambiguous (was 30%)
-            ambiguity_penalty = (ambiguous_ratio - 0.5) * 30  # Reduced from 100
-        elif ambiguous_ratio > 0.2:  # More than 20% ambiguous (was 10%)
-            ambiguity_penalty = (ambiguous_ratio - 0.2) * 15  # Reduced from 50
+        # HARSH ambiguity penalties - every AMBIGUOUS segment hurts quality significantly
+        ambiguity_penalty = ambiguous_ratio * 30.0  # 30 points per 100% ambiguous
         
-        final_score = max(0.0, min(100.0, raw_score - ambiguity_penalty))
+        # SEVERE unfixable penalty - these are complete failures
+        unfixable_penalty = unfixable_ratio * 50.0  # 50 points per 100% unfixable
         
-        # Log quality band
+        # Apply additional error type penalties
+        error_type_penalty = self._calculate_harsh_error_penalties(errors, total_segments)
+        
+        # Calculate final score with all penalties
+        final_score = base_score - ambiguity_penalty - unfixable_penalty - error_type_penalty
+        
+        # Ensure score stays within bounds
+        final_score = max(0.0, min(100.0, final_score))
+        
+        # Log detailed scoring breakdown for transparency
         quality_band = self._get_quality_band(final_score)
-        self.logger.debug(f"Quality calculation: base={base_score:.1f}, error_impact={error_impact_score:.1f}, "
-                         f"content={content_preservation_score:.1f}, ambiguity_penalty={ambiguity_penalty:.1f}, "
-                         f"final={final_score:.1f} ({quality_band})")
+        self.logger.info(f"HARSH Quality Scoring: error_rate={error_rate:.2%}, "
+                        f"base_score={base_score:.1f}, ambiguity_penalty={ambiguity_penalty:.1f}, "
+                        f"unfixable_penalty={unfixable_penalty:.1f}, error_penalty={error_type_penalty:.1f}, "
+                        f"final={final_score:.1f}% ({quality_band})")
         
         return final_score
     
+    def _calculate_harsh_error_penalties(self, errors: List[Dict[str, Any]], total_segments: int) -> float:
+        """
+        Calculate HARSH error penalties that directly reflect quality issues.
+        Returns penalty points to subtract from quality score.
+        """
+        if total_segments == 0 or not errors:
+            return 0.0
+        
+        # HARSH error penalties that reflect true quality impact
+        error_penalties = {
+            'missing_speaker': 8.0,      # Critical - completely unusable segment
+            'missing_text': 10.0,        # Critical - no content  
+            'empty_text': 5.0,           # High - wasted segment
+            'dialogue_as_narrator': 3.0, # Moderate - speaker misattribution
+            'narrative_as_dialogue': 3.0,# Moderate - speaker misattribution
+            'unknown_speaker': 2.0,      # Moderate - attribution confusion
+            'very_long_dialogue': 1.0,   # Minor - segmentation issue
+            'consecutive_same_speaker': 0.5, # Minor - possible oversegmentation
+            'too_many_single_use_speakers': 5.0  # High - systematic attribution failure
+        }
+        
+        # Calculate total penalty
+        total_penalty = 0.0
+        error_counts = {}
+        
+        for error in errors:
+            error_type = error.get('type', 'unknown')
+            penalty = error_penalties.get(error_type, 1.0)  # Default penalty for unknown errors
+            total_penalty += penalty
+            error_counts[error_type] = error_counts.get(error_type, 0) + 1
+        
+        # Scale penalty based on error density
+        error_ratio = len(errors) / total_segments
+        
+        # Additional scaling for high error density (when errors exceed 50% of segments)
+        if error_ratio > 0.5:
+            # Compound penalty for systematic failure
+            density_multiplier = 1.0 + (error_ratio - 0.5)  # 1.0 to 1.5x
+            total_penalty *= density_multiplier
+        
+        # Cap maximum penalty to prevent negative scores in extreme cases
+        max_penalty = 60.0  # Maximum 60 points penalty from error types
+        return min(total_penalty, max_penalty)
+    
     def _calculate_error_impact(self, errors: List[Dict[str, Any]], total_segments: int) -> float:
         """
-        Calculate error impact score with progressive penalties.
+        LEGACY: Calculate error impact score with progressive penalties.
         Returns score out of 30 points.
+        
+        NOTE: This method is kept for compatibility but is replaced by 
+        _calculate_harsh_error_penalties in the new scoring system.
         """
         if total_segments == 0:
             return 0.0
@@ -337,15 +394,22 @@ class SimplifiedValidator:
     
     def _get_quality_band(self, score: float) -> str:
         """
-        Get quality band description for a score.
+        Get quality band description for a score using HARSH but realistic thresholds.
+        
+        RECALIBRATED Quality Bands (Harsh but Truthful):
+        - Excellent (95-100%): Near-perfect attribution with <5% error rate
+        - Good (80-94%): High-quality attribution with <15% error rate  
+        - Fair (60-79%): Acceptable attribution with <30% error rate
+        - Poor (30-59%): Significant issues with 30-60% error rate
+        - Critical (0-29%): Severe problems with >60% error rate
         """
-        if score >= 90:
+        if score >= 95:
             return "Excellent"
-        elif score >= 70:
+        elif score >= 80:
             return "Good"
-        elif score >= 50:
+        elif score >= 60:
             return "Fair"
-        elif score >= 25:
+        elif score >= 30:
             return "Poor"
         else:
             return "Critical"
