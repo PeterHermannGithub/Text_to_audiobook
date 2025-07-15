@@ -244,6 +244,8 @@ class RuleBasedAttributor:
         # Method 8: Narrative vs dialogue classification
         if self._is_likely_dialogue(text):
             return "AMBIGUOUS", 0.3  # Mark as dialogue but uncertain speaker
+        elif self._is_obvious_narrative(text):
+            return "narrator", 0.85  # High confidence for obvious narrative text
         else:
             return "narrator", 0.6  # Likely narrative text
     
@@ -460,6 +462,58 @@ class RuleBasedAttributor:
         """Check if text is likely dialogue based on markers."""
         dialogue_indicators = ['"', '"', '"', "'", '—', '–']
         return any(indicator in text for indicator in dialogue_indicators)
+    
+    def _is_obvious_narrative(self, text: str) -> bool:
+        """
+        Check if text is obviously narrative and should have high confidence.
+        
+        Returns True for simple descriptive text that clearly isn't dialogue
+        and doesn't require LLM processing.
+        """
+        text = text.strip()
+        
+        # Must not contain any dialogue indicators
+        if self._is_likely_dialogue(text):
+            return False
+        
+        # Must be reasonably short and simple
+        if len(text) > 200:
+            return False
+        
+        # Check for dialogue attribution patterns (indicates character interaction)
+        for pattern in self.dialogue_attribution_patterns[:5]:  # Check first 5 patterns
+            if re.search(pattern, text, re.IGNORECASE):
+                return False
+        
+        # Check for character interaction indicators
+        interaction_indicators = [
+            'said', 'replied', 'asked', 'whispered', 'shouted', 'told',
+            'responded', 'answered', 'continued', 'added', 'called',
+            'yelled', 'muttered', 'exclaimed'
+        ]
+        
+        # If it contains multiple interaction indicators, it's likely complex dialogue
+        interaction_count = sum(1 for indicator in interaction_indicators if indicator in text.lower())
+        if interaction_count >= 2:
+            return False
+        
+        # Check for possessive patterns indicating character dialogue
+        possessive_patterns = [
+            r"[A-Z][a-z]+(?:\s[A-Z][a-z]+)*'s\s+(?:voice|words|response|question)",
+            r"[A-Z][a-z]+(?:\s[A-Z][a-z]+)*\s+(?:said|asked|replied|told)"
+        ]
+        
+        for pattern in possessive_patterns:
+            if re.search(pattern, text):
+                return False
+        
+        # Check for script-like patterns
+        if self._looks_like_script_line(text):
+            return False
+        
+        # If it's simple, descriptive text without dialogue markers or character interactions
+        # Examples: "This is the first paragraph.", "The room was quiet.", "It was a dark night."
+        return True
     
     def _is_likely_character_name(self, name: str) -> bool:
         """Check if a string looks like a character name."""

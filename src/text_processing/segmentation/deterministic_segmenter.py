@@ -15,10 +15,16 @@ class DeterministicSegmenter:
         self.logger = logging.getLogger(__name__)
         
         # Metadata patterns to filter out at segmentation level
+        # FIXED: Made more specific to avoid filtering legitimate story content
         self.metadata_patterns = [
-            r'^chapter\s+\d+', r'^chapter\s+[ivx]+', r'^ch\.\s*\d+',
-            r'^epilogue', r'^prologue', r'^part\s+\d+', r'^book\s+\d+',
-            r'^volume\s+\d+', r'^section\s+\d+', r'^author:', r'^writer:',
+            r'^chapter\s+\d+\s*$',  # Only standalone "Chapter X" lines
+            r'^chapter\s+[ivx]+\s*$',  # Only standalone "Chapter III" lines
+            r'^ch\.\s*\d+\s*$',  # Only standalone "Ch. X" lines
+            r'^epilogue\s*$',  # Only standalone "Epilogue" lines
+            r'^prologue\s*$',  # Only standalone "Prologue" lines
+            r'^part\s+\d+\s*$', r'^book\s+\d+\s*$',
+            r'^volume\s+\d+\s*$', r'^section\s+\d+\s*$', 
+            r'^author:\s*$', r'^writer:\s*$',
             r'^\d+\.\s*$', r'^[ivx]+\.\s*$'
         ]
         
@@ -420,17 +426,12 @@ class DeterministicSegmenter:
             if re.match(pattern, segment_lower):
                 return True
         
-        # Check for chapter-like patterns
-        if re.match(r'^chapter\s+', segment_lower):
-            return True
-            
-        # Check if it's just a chapter title or header
-        if (len(segment) < 100 and 
-            ('chapter' in segment_lower or 
-             'epilogue' in segment_lower or 
-             'prologue' in segment_lower or
-             re.match(r'^\d+\.\s', segment) or
-             segment.count(':') == 1 and segment.endswith(':'))):
+        # REMOVED: Overly aggressive chapter filtering that was removing story content
+        # REMOVED: Length-based filtering that was removing legitimate chapter titles
+        
+        # Only filter very specific metadata patterns
+        if (re.match(r'^\d+\.\s*$', segment.strip()) or  # Standalone numbers
+            segment.count(':') == 1 and segment.strip().endswith(':') and len(segment.strip()) < 50):  # Very short colon-ended lines
             return True
             
         # Check for author/metadata lines

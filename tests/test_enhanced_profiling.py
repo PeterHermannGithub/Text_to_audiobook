@@ -47,8 +47,8 @@ def test_enhanced_preprocessing():
 "Hello there," John said with a smile. "How are you today?"
 Mary looked up from her book. She closed it carefully. "I'm doing well, thank you for asking."
 
-Kim Dokja stared at his smartphone screen. The notification was clear.
-Kim Dokja: "This can't be real."
+Alex Johnson noticed the letter on the desk. The message was clear.
+Alex Johnson: "This can't be real."
 
 Dr. Sarah Johnson, also known as "The Scientist," entered the laboratory.
 She had been working on this project for months. Her research was groundbreaking.
@@ -128,7 +128,7 @@ def test_alias_detection():
     print("=== Testing Alias Detection ===")
     
     test_cases = [
-        'Kim Dokja, also known as The Fool, entered the room.',
+        'Alex Johnson, also known as The Scholar, entered the room.',
         'The Hero, also called John Smith, stood up.',
         '"The Scientist," Dr. Johnson said quietly.',
         'Captain Marvel thought, "I am the strongest."'

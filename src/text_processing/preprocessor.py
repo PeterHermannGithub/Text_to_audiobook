@@ -12,9 +12,10 @@ class CharacterProfile:
     def __init__(self, name: str):
         self.name = name
         self.pronouns = set()  # e.g., {"he", "his", "him"}
-        self.aliases = set()   # e.g., {"The Fool", "Dokja-ssi"}
+        self.aliases = set()   # e.g., {"The Scholar", "Alex"}
         self.titles = set()    # e.g., {"Mr.", "Sir", "Captain"}
         self.confidence = 0.0  # Overall confidence in this being a character
+        self.appearance_count = 0  # Number of times this character name appears
         
     def add_pronoun(self, pronoun: str, confidence: float = 1.0):
         """Add a pronoun with confidence weighting."""
@@ -31,6 +32,12 @@ class CharacterProfile:
         self.titles.add(title)
         self.confidence = max(self.confidence, confidence)
         
+    def add_appearance(self, confidence_boost: float = 0.0):
+        """Increment appearance count and optionally boost confidence."""
+        self.appearance_count += 1
+        if confidence_boost > 0:
+            self.confidence = min(1.0, self.confidence + confidence_boost)
+        
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for metadata."""
         return {
@@ -38,7 +45,8 @@ class CharacterProfile:
             "pronouns": list(self.pronouns),
             "aliases": list(self.aliases),
             "titles": list(self.titles),
-            "confidence": self.confidence
+            "confidence": self.confidence,
+            "appearance_count": self.appearance_count
         }
 
 class TextPreprocessor:
@@ -146,74 +154,99 @@ class TextPreprocessor:
         """
         profiles = {}
         
-        # Step 1: Extract character names from various patterns
-        name_candidates = self._extract_character_names(text, doc)
+        # Step 1: Extract character names with confidence scores from various patterns
+        name_candidates_with_confidence = self._extract_character_names_with_confidence(text, doc)
         
-        # Step 2: Create initial profiles
-        for name in name_candidates:
+        # Step 2: Create initial profiles with method-based confidence and appearance counts
+        appearance_counts = getattr(self, '_last_appearance_counts', {})
+        for name, confidence in name_candidates_with_confidence.items():
             if name not in profiles:
                 profiles[name] = CharacterProfile(name)
-                profiles[name].confidence = 0.7  # Base confidence for name detection
+                profiles[name].confidence = confidence  # Use extraction-method-based confidence
+                profiles[name].appearance_count = appearance_counts.get(name, 1)  # Set appearance count
         
         # Step 3: Enhance profiles with pronouns, aliases, and titles
         self._detect_pronouns(text, doc, profiles)
         self._detect_aliases(text, doc, profiles)
         self._detect_titles(text, doc, profiles)
         
-        # Step 4: Filter out low-confidence profiles
-        filtered_profiles = {
-            name: profile for name, profile in profiles.items()
-            if profile.confidence >= 0.5  # Minimum confidence threshold
-        }
+        # Step 4: Filter out low-confidence profiles and rare appearances
+        filtered_profiles = {}
+        for name, profile in profiles.items():
+            # Confidence threshold
+            meets_confidence = profile.confidence >= 0.5
+            
+            # Appearance threshold (more lenient for high-confidence extractions)
+            min_appearances = 1 if profile.confidence >= 0.8 else 2
+            meets_appearances = profile.appearance_count >= min_appearances
+            
+            if meets_confidence and meets_appearances:
+                filtered_profiles[name] = profile
         
-        return filtered_profiles
+        # Step 5: Consolidate similar character names using fuzzy matching
+        consolidated_profiles = self._consolidate_similar_profiles(filtered_profiles)
+        
+        return consolidated_profiles
     
-    def _extract_character_names(self, text: str, doc) -> Set[str]:
-        """Extract character names using various pattern matching techniques."""
-        names = set()
+    def _extract_character_names_with_confidence(self, text: str, doc) -> Dict[str, float]:
+        """Extract character names with confidence scores and appearance counts based on extraction method."""
+        name_confidence = {}
+        name_appearances = {}  # Track appearances for each name
         
-        # Pattern 1: Names with dialogue tags
+        # Pattern 1: Names with dialogue tags (HIGH confidence - 0.9)
         dialogue_pattern = r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\s+(' + '|'.join(self.dialogue_tags) + r')'
         for match in re.finditer(dialogue_pattern, text):
             name = match.group(1).strip()
             normalized_name = self._normalize_character_name(name)
             if normalized_name and self._is_valid_character_name(normalized_name, doc, match.start(), match.end()):
-                names.add(normalized_name)
+                # Dialogue attribution is very reliable for character names
+                name_confidence[normalized_name] = max(name_confidence.get(normalized_name, 0), 0.9)
+                name_appearances[normalized_name] = name_appearances.get(normalized_name, 0) + 1
         
-        # Pattern 2: Possessives (e.g., John's)
-        possessive_pattern = r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\'s\s'
-        for match in re.finditer(possessive_pattern, text):
+        # Pattern 2: Script format names (VERY HIGH confidence - 0.95)
+        script_pattern = r'^(?:–|\s|-)?\s*([A-Z][a-zA-Z0-9_\s]+):\s*'
+        for match in re.finditer(script_pattern, text, re.MULTILINE):
             name = match.group(1).strip()
             normalized_name = self._normalize_character_name(name)
             if normalized_name and self._is_valid_character_name(normalized_name, doc, match.start(), match.end()):
-                names.add(normalized_name)
+                # Script format is extremely reliable for character names
+                name_confidence[normalized_name] = max(name_confidence.get(normalized_name, 0), 0.95)
+                name_appearances[normalized_name] = name_appearances.get(normalized_name, 0) + 1
         
-        # Pattern 3: Names with titles
+        # Pattern 3: Names with titles (HIGH confidence - 0.85)
         for title_pattern in self.title_patterns:
             pattern = title_pattern + r'\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)'
             for match in re.finditer(pattern, text):
                 name = match.group(2).strip() if match.lastindex >= 2 else match.group(1).strip()
                 normalized_name = self._normalize_character_name(name)
                 if normalized_name and self._is_valid_character_name(normalized_name, doc, match.start(), match.end()):
-                    names.add(normalized_name)
+                    # Titles indicate formal character references
+                    name_confidence[normalized_name] = max(name_confidence.get(normalized_name, 0), 0.85)
+                    name_appearances[normalized_name] = name_appearances.get(normalized_name, 0) + 1
         
-        # Pattern 4: Script format names (CHARACTER:)
-        script_pattern = r'^(?:–|\s|-)?\s*([A-Z][a-zA-Z0-9_\s]+):\s*'
-        for match in re.finditer(script_pattern, text, re.MULTILINE):
+        # Pattern 4: Possessives (MEDIUM confidence - 0.7)
+        possessive_pattern = r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\'s\s'
+        for match in re.finditer(possessive_pattern, text):
             name = match.group(1).strip()
             normalized_name = self._normalize_character_name(name)
             if normalized_name and self._is_valid_character_name(normalized_name, doc, match.start(), match.end()):
-                names.add(normalized_name)
+                # Possessives are somewhat reliable but can be false positives
+                name_confidence[normalized_name] = max(name_confidence.get(normalized_name, 0), 0.7)
+                name_appearances[normalized_name] = name_appearances.get(normalized_name, 0) + 1
         
-        # Pattern 5: spaCy NER entities (if available)
+        # Pattern 5: spaCy NER entities (MEDIUM-LOW confidence - 0.6)
         if doc:
             for ent in doc.ents:
                 if ent.label_ == 'PERSON' and len(ent.text.strip()) > 2:
                     normalized_name = self._normalize_character_name(ent.text.strip())
-                    if normalized_name:
-                        names.add(normalized_name)
+                    if normalized_name and self._is_valid_character_name(normalized_name, doc, ent.start_char, ent.end_char):
+                        # spaCy can have false positives, especially with author names
+                        name_confidence[normalized_name] = max(name_confidence.get(normalized_name, 0), 0.6)
+                        name_appearances[normalized_name] = name_appearances.get(normalized_name, 0) + 1
         
-        return names
+        # Store appearance counts in a way that the calling method can access them
+        self._last_appearance_counts = name_appearances
+        return name_confidence
     
     def _detect_pronouns(self, text: str, doc, profiles: Dict[str, CharacterProfile]):
         """Detect pronouns associated with character names."""
@@ -246,12 +279,12 @@ class TextPreprocessor:
     
     def _detect_aliases(self, text: str, doc, profiles: Dict[str, CharacterProfile]):
         """Detect aliases and alternative names for characters."""
-        # Look for patterns like "Kim Dokja, also known as The Fool"
+        # Look for patterns like "Alex Johnson, also known as The Scholar"
         alias_patterns = [
             r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*),?\s+(?:also\s+)?(?:known\s+as|called)\s+([A-Z][^,.!?]*)',
             r'([A-Z][^,.!?]*),?\s+(?:also\s+)?(?:known\s+as|called)\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)',
-            r'"([^"]+)"\s*[,.]?\s*([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\s+(?:said|thought|whispered)',  # "The Fool," John said
-            r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\s+(?:said|thought|whispered)[^.]*[,.]?\s*"([^"]+)"'   # John said, "The Fool"
+            r'"([^"]+)"\s*[,.]?\s*([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\s+(?:said|thought|whispered)',  # "The Scholar," John said
+            r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\s+(?:said|thought|whispered)[^.]*[,.]?\s*"([^"]+)"'   # John said, "The Scholar"
         ]
         
         for pattern in alias_patterns:
@@ -290,23 +323,127 @@ class TextPreprocessor:
         if not name[0].isupper():
             return False
             
-        # Check for common non-name words
+        # Enhanced blacklists for better character filtering
+        
+        # Common non-name words (expanded)
         non_names = {
             'the', 'and', 'but', 'for', 'with', 'from', 'into', 'then', 
             'here', 'there', 'this', 'that', 'what', 'where', 'when', 
             'why', 'how', 'chapter', 'section', 'part', 'book', 'page',
-            'said', 'asked', 'replied', 'thought', 'whispered', 'shouted'
+            'said', 'asked', 'replied', 'thought', 'whispered', 'shouted',
+            # Pronouns that often get capitalized
+            'it', 'he', 'she', 'they', 'we', 'you', 'i', 'me', 'him', 'her',
+            'them', 'us', 'my', 'your', 'his', 'its', 'our', 'their',
+            # Common demonstratives and articles
+            'this', 'that', 'these', 'those', 'such', 'some', 'any', 'many', 'few',
+            # Time/location words often capitalized
+            'now', 'then', 'today', 'tomorrow', 'yesterday', 'here', 'there'
         }
         
-        if name.lower() in non_names:
+        # Famous authors that might appear in literary texts
+        famous_authors = {
+            # Korean authors (for webtoons/novels)
+            'sing shinsong', 'sing shangshong', 'sing shang shong',
+            # Japanese authors
+            'murakami haruki', 'haruki murakami', 'yukio mishima', 'kazuo ishiguro',
+            'banana yoshimoto', 'kobo abe', 'junichiro tanizaki', 'yasunari kawabata',
+            # Western literary authors
+            'raymond carver', 'ernest hemingway', 'james joyce', 'virginia woolf',
+            'william faulkner', 'john steinbeck', 'f scott fitzgerald', 'mark twain',
+            'charles dickens', 'jane austen', 'george orwell', 'aldous huxley',
+            'margaret atwood', 'toni morrison', 'maya angelou', 'sylvia plath',
+            # Korean authors (expanded)
+            'han kang', 'kim young ha', 'cho nam joo', 'bae suah', 'park min gyu',
+            'shin kyung sook', 'park wan suh', 'yi mun yol', 'gong ji young',
+            # Contemporary authors
+            'brandon sanderson', 'george r r martin', 'j k rowling', 'stephen king',
+            'neil gaiman', 'terry pratchett', 'ursula k le guin', 'isaac asimov'
+        }
+        
+        # Literary/publishing terms that aren't characters
+        literary_terms = {
+            'author', 'writer', 'novelist', 'poet', 'editor', 'publisher', 'translator',
+            'protagonist', 'antagonist', 'narrator', 'reader', 'character',
+            'chapter', 'prologue', 'epilogue', 'preface', 'foreword', 'afterword',
+            'volume', 'edition', 'version', 'draft', 'manuscript', 'publication',
+            'copyright', 'isbn', 'bibliography', 'glossary', 'index', 'appendix',
+            'novel', 'story', 'tale', 'book', 'text', 'work', 'literature',
+            'fiction', 'nonfiction', 'fantasy', 'romance', 'mystery', 'thriller',
+            'science fiction', 'historical fiction', 'dystopian', 'utopian'
+        }
+        
+        # Apply all blacklist filters
+        name_lower = name.lower()
+        
+        if name_lower in non_names:
+            return False
+        
+        if name_lower in famous_authors:
             return False
             
+        if name_lower in literary_terms:
+            return False
+            
+        # Check for partial matches with famous authors (to catch variations)
+        for author in famous_authors:
+            if name_lower in author or author in name_lower:
+                # Allow if the name is significantly longer (might be a character with similar name)
+                if len(name_lower) > len(author) + 5:
+                    continue
+                return False
+        
+        # Enhanced pronoun detection (context-aware)
+        if self._is_likely_pronoun_context(name, doc, match_start, match_end):
+            return False
+        
         # Use spaCy validation if available
         if doc and match_start != match_end:
             return self._is_proper_noun(name, doc, match_start, match_end)
         
         # Fallback validation
         return True
+
+    def _is_likely_pronoun_context(self, name: str, doc, match_start: int, match_end: int) -> bool:
+        """
+        Enhanced pronoun detection using context analysis.
+        
+        Returns True if the name is likely a pronoun being misidentified as a character name.
+        """
+        name_lower = name.lower()
+        
+        # Direct pronoun check
+        common_pronouns = {'it', 'he', 'she', 'they', 'this', 'that', 'these', 'those'}
+        if name_lower in common_pronouns:
+            return True
+        
+        # If no spaCy context available, use basic check
+        if not doc or match_start == match_end:
+            return name_lower in common_pronouns
+            
+        try:
+            # Get the token for contextual analysis
+            span = doc.char_span(match_start, match_end)
+            if span is None:
+                return name_lower in common_pronouns
+                
+            # Check if spaCy identifies this as a pronoun
+            for token in span:
+                if token.pos_ == 'PRON':
+                    return True
+                    
+                # Additional check: if it's at sentence start but is a pronoun elsewhere
+                if token.i > 0:  # Not the first token in document
+                    prev_token = token.doc[token.i - 1]
+                    # If previous token is sentence-ending punctuation, this might be 
+                    # a pronoun that got capitalized due to sentence start
+                    if prev_token.text in '.!?' and name_lower in common_pronouns:
+                        return True
+                        
+        except Exception:
+            # Fallback to basic check if spaCy processing fails
+            return name_lower in common_pronouns
+            
+        return False
 
     def _is_proper_noun(self, name, doc, match_start, match_end):
         """
@@ -915,3 +1052,89 @@ class TextPreprocessor:
         name = re.sub(r'\s+', ' ', name)  # Final whitespace cleanup
         
         return name.strip()
+
+    def _consolidate_similar_profiles(self, profiles: Dict[str, CharacterProfile]) -> Dict[str, CharacterProfile]:
+        """
+        Consolidate similar character profiles using fuzzy string matching.
+        
+        This resolves issues like "Alex Johnson" vs "Alex John" being treated as separate characters.
+        
+        Args:
+            profiles: Dictionary mapping names to CharacterProfile objects
+            
+        Returns:
+            Consolidated dictionary with merged similar profiles
+        """
+        if len(profiles) <= 1:
+            return profiles
+            
+        consolidated = {}
+        processed_names = set()
+        
+        # Convert to list for easier processing
+        profile_items = list(profiles.items())
+        
+        for i, (name1, profile1) in enumerate(profile_items):
+            if name1 in processed_names:
+                continue
+                
+            # Start with the current profile as the canonical one
+            canonical_profile = profile1
+            canonical_name = name1
+            similar_profiles = [profile1]
+            
+            # Compare with all remaining profiles
+            for j, (name2, profile2) in enumerate(profile_items[i+1:], i+1):
+                if name2 in processed_names:
+                    continue
+                    
+                # Calculate similarity between names
+                similarity = fuzz.ratio(name1.lower(), name2.lower())
+                
+                # Also check if one name is contained in the other (for partial matches)
+                name1_lower = name1.lower()
+                name2_lower = name2.lower()
+                is_substring = (name1_lower in name2_lower) or (name2_lower in name1_lower)
+                
+                # Consider them similar if:
+                # 1. High fuzzy similarity (85%+), OR
+                # 2. One is a substring of the other with reasonable length difference
+                should_merge = (
+                    similarity >= 85 or
+                    (is_substring and abs(len(name1) - len(name2)) <= 5)
+                )
+                
+                if should_merge:
+                    # Choose the better name (prefer longer, higher confidence)
+                    if (len(name2) > len(canonical_name) or 
+                        (len(name2) == len(canonical_name) and profile2.confidence > canonical_profile.confidence)):
+                        canonical_name = name2
+                        canonical_profile = profile2
+                    
+                    similar_profiles.append(profile2)
+                    processed_names.add(name2)
+                    
+            # Create consolidated profile
+            if len(similar_profiles) > 1:
+                # Merge all similar profiles into the canonical one
+                for profile in similar_profiles:
+                    if profile != canonical_profile:
+                        # Merge pronouns, aliases, and titles
+                        canonical_profile.pronouns.update(profile.pronouns)
+                        canonical_profile.aliases.update(profile.aliases)
+                        canonical_profile.titles.update(profile.titles)
+                        
+                        # Use highest confidence
+                        canonical_profile.confidence = max(canonical_profile.confidence, profile.confidence)
+                        
+                        # Sum appearance counts for better character frequency assessment
+                        canonical_profile.appearance_count += profile.appearance_count
+                        
+                        # Add the original names as aliases if they're different
+                        if profile.name != canonical_profile.name:
+                            canonical_profile.aliases.add(profile.name)
+            
+            consolidated[canonical_name] = canonical_profile
+            processed_names.add(canonical_name)
+            
+        return consolidated

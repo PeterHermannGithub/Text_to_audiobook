@@ -432,3 +432,61 @@ Lines from a clear first-person perspective may be spoken by a main character if
             task_display += f"{i}. {line}\n"
         
         return task_display.strip()
+    
+    def create_simple_classification_prompt(self, numbered_lines):
+        """
+        Creates a simplified speaker classification prompt for fallback scenarios.
+        
+        Args:
+            numbered_lines: List of strings, each representing a pre-segmented line
+            
+        Returns:
+            String prompt for simple speaker classification
+        """
+        if not numbered_lines:
+            return ""
+        
+        # Build task block
+        task_block = ""
+        for i, line in enumerate(numbered_lines, 1):
+            task_block += f"{i}. {line}\n"
+        
+        task_count = len(numbered_lines)
+        
+        return f"""Identify the speaker for each line. Respond with a JSON array of {task_count} speaker names.
+
+Rules:
+- Use "narrator" for descriptive text or scene descriptions
+- Use character names for dialogue in quotes
+- Use "AMBIGUOUS" if the speaker is unclear
+
+Lines to classify:
+{task_block.strip()}
+
+Response format: ["speaker1", "speaker2", "speaker3"]"""
+
+    def create_ultra_simple_prompt(self, numbered_lines):
+        """
+        Creates an ultra-simplified speaker classification prompt for final fallback.
+        
+        Args:
+            numbered_lines: List of strings, each representing a pre-segmented line
+            
+        Returns:
+            String prompt for ultra-simple speaker classification
+        """
+        if not numbered_lines:
+            return ""
+        
+        # Build task block
+        task_block = ""
+        for i, line in enumerate(numbered_lines, 1):
+            task_block += f"{i}. {line}\n"
+        
+        task_count = len(numbered_lines)
+        
+        return f"""For each line, say who is speaking. Return exactly {task_count} names in a JSON array.
+
+{task_block.strip()}
+
+Format: ["name1", "name2", "name3"]"""

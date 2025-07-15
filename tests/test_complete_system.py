@@ -32,8 +32,8 @@ Dr. Sarah Johnson, also known as "The Scientist," entered the laboratory. She ha
 She turned around. "Yes?"
 "The experiment is ready."
 
-Kim Dokja stared at his smartphone screen. The notification was clear: [You have received a new message].
-Kim Dokja: "This can't be real."
+Alex Johnson noticed the letter on the desk. The message was clear: [You have received a new message].
+Alex Johnson: "This can't be real."
 He walked over to the window. What was he supposed to do now?'''
 
     print(f"Input text ({len(test_text)} characters):")
@@ -121,7 +121,7 @@ He walked over to the window. What was he supposed to do now?'''
         print("✓ LLM speaker classification (no text modification)")
         
         # Sprint 4: Enhanced character profiling
-        enhanced_chars = any(segment.get('speaker') in ['John', 'Mary', 'Sarah Johnson', 'Kim Dokja'] 
+        enhanced_chars = any(segment.get('speaker') in ['John', 'Mary', 'Sarah Johnson', 'Alex Johnson'] 
                            for segment in structured_segments)
         if enhanced_chars:
             print("✓ Enhanced character profiling working")

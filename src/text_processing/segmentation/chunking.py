@@ -79,40 +79,22 @@ class ChunkManager:
 
     def merge(self, final_segments, new_structured_segments):
         """
-        Merges new structured segments into the final list, handling overlaps
-        using fuzzy sequence matching to find the most likely merge point.
+        FIXED: Simple position-based merging that preserves order without fuzzy matching.
+        
+        The old fuzzy sequence matching was causing massive order corruption and duplication
+        by incorrectly identifying "overlaps" where none existed. This simpler approach
+        maintains sequential order and eliminates false positive overlaps.
         """
         if not final_segments:
             return new_structured_segments
 
-        max_lookahead = min(len(final_segments), len(new_structured_segments), 10) # Look at up to 10 segments for overlap
-        if max_lookahead == 0:
-            return final_segments + new_structured_segments
-
-        best_match_index = 0
-        highest_similarity = 0
-
-        for i in range(1, max_lookahead + 1):
-            # Create the text sequences to compare
-            final_overlap_text = " ".join([s['text'] for s in final_segments[-i:]])
-            new_overlap_text = " ".join([s['text'] for s in new_structured_segments[:i]])
-
-            # Use fuzzy matching to compare the sequences
-            similarity = fuzz.ratio(final_overlap_text, new_overlap_text)
-
-            if similarity > highest_similarity:
-                highest_similarity = similarity
-                best_match_index = i
-
-        # Only merge if we have a confident match (e.g., > 85% similar)
-        if highest_similarity > 85:
-            merge_index = best_match_index
-            # print(f"DEBUG: Found fuzzy overlap of {merge_index} segments with {highest_similarity}% similarity.") # Optional Debugging
-        else:
-            merge_index = 0 # No confident overlap, append everything
-            # print(f"DEBUG: No confident overlap found (best was {highest_similarity}%). Appending all new segments.") # Optional Debugging
-
-        return final_segments + new_structured_segments[merge_index:]
+        if not new_structured_segments:
+            return final_segments
+            
+        # Simple concatenation preserves order and prevents corruption
+        # If there are actual overlaps in the chunking process, they should be
+        # handled at the chunking level, not during merging
+        return final_segments + new_structured_segments
 
     # ========================================
     # ROLLING CONTEXT METHODS

@@ -182,7 +182,7 @@ class TextStructurer:
                                 task_text_lines, context_lines, enhanced_metadata
                             )
                             response = self.llm_orchestrator._get_llm_response(prompt)
-                            speaker_classifications = self.llm_orchestrator._parse_speaker_array_enhanced(
+                            speaker_classifications = self.llm_orchestrator.json_parser.parse_speaker_array_enhanced(
                                 response, len(task_text_lines), 0
                             )
                         else:
