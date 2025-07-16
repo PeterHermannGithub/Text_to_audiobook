@@ -1,12 +1,20 @@
-# Claude.md - AI Assistant Guide for Text_to_audiobook
+# CLAUDE.md - AI Assistant Guide for Text-to-Audiobook
 
-**Project Goal:** To convert text from various document formats into a structured, voice-ready script, which can then be used to generate a multi-character audiobook.
+**Project Goal:** To convert text from various document formats into a structured, voice-ready script, which can then be used to generate a multi-character audiobook with enterprise-grade distributed processing capabilities.
 
-This document provides a comprehensive technical overview for AI assistants to understand, maintain, and extend this project.
+This document provides a comprehensive technical overview for AI assistants to understand, maintain, and extend this project. For user-facing documentation, see [README.md](README.md).
 
-## 🏆 **Latest Major Update: Professional Architecture Refactoring & Quality Improvements**
+## 📋 **Documentation Structure**
 
-**Implemented: January 2025** - Complete architectural overhaul with professional code organization and 4-phase improvement plan delivering significant quality and performance enhancements:
+- **[README.md](README.md)**: User-facing documentation with installation, usage, and deployment guides
+- **[CLAUDE.md](CLAUDE.md)**: This file - technical documentation for AI assistants
+- **[GEMINI.md](GEMINI.md)**: Legacy documentation (to be removed)
+
+**Note**: Following the **universal 2-file policy**, only README.md and CLAUDE.md should be maintained going forward.
+
+## 🏆 **Latest Major Update: Enterprise-Grade Architecture & Documentation Overhaul**
+
+**Implemented: January 2025** - Complete architectural overhaul with professional code organization, distributed processing capabilities, and comprehensive documentation:
 
 ### **Key Achievements:**
 - ✅ **Professional Code Organization**: Restructured 8,933 lines into logical subdirectories
@@ -17,6 +25,10 @@ This document provides a comprehensive technical overview for AI assistants to u
 - ✅ **Mixed-Content Detection**: Sophisticated dialogue/narrative ratio analysis with aggressive splitting
 - ✅ **Enhanced Speaker Attribution**: Context-aware character profiling and conversation flow analysis
 - ✅ **Production-Ready Performance**: ~15 second processing with <300ms per chunk
+- ✅ **Distributed Processing**: Kafka, Spark, Redis-based horizontal scaling architecture
+- ✅ **Enterprise Documentation**: Comprehensive README.md with deployment guides
+- ✅ **Docker Containerization**: Production-ready Docker configurations
+- ✅ **Monitoring & Observability**: Prometheus, Grafana, health checks
 
 ### **Architectural Improvements:**
 1. **Professional Package Structure**: Organized into text_processing/, attribution/, refinement/, validation/, output/
@@ -26,6 +38,9 @@ This document provides a comprehensive technical overview for AI assistants to u
 5. **Advanced Mixed-Content Splitting**: Detects and splits segments with >20% dialogue + >20% narrative
 6. **Contextual Memory System**: Conversation flow analysis for AMBIGUOUS speaker resolution
 7. **Comprehensive Quality Validation**: Speaker consistency analysis with detailed error reporting
+8. **Distributed Architecture**: Event-driven processing with horizontal scaling
+9. **Enterprise Monitoring**: Real-time metrics and health monitoring
+10. **Docker Deployment**: Production-ready containerization with orchestration
 
 ---
 
@@ -232,7 +247,7 @@ The application uses centralized configuration in `config/settings.py` with the 
 ```python
 # LLM Engine Settings
 DEFAULT_LLM_ENGINE = "local"          # "local" or "gcp"
-DEFAULT_LOCAL_MODEL = "mistral"       # "mistral" or "llama3"
+DEFAULT_LOCAL_MODEL = "deepseek-v2:16b"  # Current default model
 OLLAMA_URL = "http://localhost:11434/api/generate"
 GCP_LLM_MODEL = "gemini-1.0-pro"
 GCP_LOCATION = "us-central1"
@@ -268,7 +283,7 @@ The `DeterministicSegmenter` uses these thresholds for mixed-content detection:
 1.  **Setup Virtual Environment:**
     ```bash
     # Navigate to project root
-    cd /mnt/c/Dev/Projects_gemini/Text_to_audiobook
+    cd /mnt/c/Dev/Projects/text_to_audiobook
 
     # Create and activate venv if it doesn't exist
     python -m venv venv
@@ -366,3 +381,72 @@ To maintain a clean repository and avoid committing unnecessary or sensitive fil
 *   **Input/Output Data:** `input/`, `output/`, `*.json`
 
 This policy ensures that only essential source code and configuration files are tracked in the repository. For a complete list of ignored patterns, refer to the `.gitignore` file.
+
+---
+
+## 🚀 **Advanced Features for AI Assistants**
+
+### **Distributed Processing Architecture**
+
+The system supports both traditional and distributed processing modes:
+
+**Traditional Mode**: Sequential processing with single-threaded execution
+**Distributed Mode**: Event-driven processing with horizontal scaling
+**Hybrid Mode**: Intelligent switching between modes based on document size and complexity
+
+### **LLM Pool Management**
+
+The `LLMPoolManager` provides efficient connection pooling for multiple LLM instances:
+- **Connection Pooling**: Maintains persistent connections to reduce latency
+- **Load Balancing**: Distributes requests across available LLM instances
+- **Fault Tolerance**: Automatic failover and retry mechanisms
+- **Resource Optimization**: Dynamic scaling based on demand
+
+### **Monitoring and Observability**
+
+**Prometheus Metrics**: Comprehensive application metrics collection
+**Grafana Dashboards**: Real-time visualization and alerting
+**Health Checks**: Component status monitoring
+**Distributed Tracing**: Request flow tracking across services
+
+### **Docker Deployment Patterns**
+
+**Development**: `docker-compose.dev.yml` with hot-reload and debugging
+**Production**: `docker-compose.prod.yml` with optimized configurations
+**Scaling**: Horizontal scaling with multiple worker containers
+**Monitoring**: Integrated Prometheus and Grafana containers
+
+### **Quality Assurance Features**
+
+**Deterministic Processing**: Rule-based segmentation prevents text corruption
+**Multi-Layer Validation**: Quality checks at multiple processing stages
+**Confidence Scoring**: Reliability metrics for AI-generated content
+**Fallback Systems**: Progressive degradation for edge cases
+
+### **Performance Optimization**
+
+**Caching**: Redis-based intermediate result caching
+**Chunking**: Intelligent text chunking for optimal LLM processing
+**Parallel Processing**: Multi-threaded and distributed processing
+**Memory Management**: Efficient memory usage patterns
+
+---
+
+## 🔄 **Migration from Legacy Documentation**
+
+**Note**: The `GEMINI.md` file contains legacy documentation that has been consolidated into this CLAUDE.md file. The content has been updated to reflect the current architecture and should be removed as part of the documentation cleanup process.
+
+### **Key Changes from Legacy Documentation**:
+- Updated project structure to reflect distributed architecture
+- Added Docker deployment configurations
+- Enhanced testing infrastructure documentation
+- Included monitoring and observability features
+- Added distributed processing capabilities
+- Updated configuration examples with current settings
+
+### **For AI Assistants Working on This Project**:
+- Use this CLAUDE.md file as the primary technical reference
+- Refer to README.md for user-facing documentation
+- Follow the enterprise architecture patterns described above
+- Maintain compatibility with both traditional and distributed processing modes
+- Ensure all code changes include appropriate tests and documentation updates

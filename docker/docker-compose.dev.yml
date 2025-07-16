@@ -1,0 +1,205 @@
+# Text-to-Audiobook Development Docker Compose
+# Optimized for development with hot reload and debugging
+
+version: '3.8'
+
+services:
+  # Main application service for development
+  app:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.dev
+    container_name: text_to_audiobook_app_dev
+    environment:
+      - PYTHONPATH=/app
+      - LOG_LEVEL=DEBUG
+      - DEVELOPMENT=true
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - REDIS_URL=redis://redis:6379/0
+      - SPARK_MASTER=spark://spark:7077
+      - PROMETHEUS_PORT=8000
+    ports:
+      - "8000:8000"
+      - "8888:8888"  # Jupyter notebook
+    volumes:
+      - ..:/app
+      - /app/venv  # Exclude venv from host mount
+    depends_on:
+      - kafka
+      - redis
+      - spark
+    networks:
+      - textapp-dev-network
+    restart: unless-stopped
+    command: ["python", "app.py", "--help"]
+
+  # Development worker for distributed processing
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.dev
+    container_name: text_to_audiobook_worker_dev
+    environment:
+      - PYTHONPATH=/app
+      - LOG_LEVEL=DEBUG
+      - DEVELOPMENT=true
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - REDIS_URL=redis://redis:6379/0
+      - SPARK_MASTER=spark://spark:7077
+    volumes:
+      - ..:/app
+      - /app/venv
+    depends_on:
+      - kafka
+      - redis
+      - spark
+    networks:
+      - textapp-dev-network
+    restart: unless-stopped
+    command: ["python", "-c", "import time; time.sleep(60)"]  # Keep container alive
+
+  # Apache Kafka for event streaming
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: text_to_audiobook_kafka_dev
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+    ports:
+      - "9092:9092"
+    depends_on:
+      - zookeeper
+    networks:
+      - textapp-dev-network
+    restart: unless-stopped
+
+  # Zookeeper for Kafka coordination
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: text_to_audiobook_zookeeper_dev
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    networks:
+      - textapp-dev-network
+    restart: unless-stopped
+
+  # Redis for caching and session management
+  redis:
+    image: redis:7-alpine
+    container_name: text_to_audiobook_redis_dev
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-dev-data:/data
+    networks:
+      - textapp-dev-network
+    restart: unless-stopped
+
+  # Apache Spark master
+  spark:
+    image: bitnami/spark:3.4
+    container_name: text_to_audiobook_spark_master_dev
+    environment:
+      - SPARK_MODE=master
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+    ports:
+      - "7077:7077"
+      - "8080:8080"
+    networks:
+      - textapp-dev-network
+    restart: unless-stopped
+
+  # Apache Spark worker
+  spark-worker:
+    image: bitnami/spark:3.4
+    container_name: text_to_audiobook_spark_worker_dev
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark:7077
+      - SPARK_WORKER_MEMORY=1G
+      - SPARK_WORKER_CORES=1
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+    depends_on:
+      - spark
+    networks:
+      - textapp-dev-network
+    restart: unless-stopped
+
+  # Prometheus for metrics collection
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: text_to_audiobook_prometheus_dev
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-dev-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - textapp-dev-network
+    restart: unless-stopped
+
+  # Grafana for monitoring dashboards
+  grafana:
+    image: grafana/grafana:latest
+    container_name: text_to_audiobook_grafana_dev
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-dev-data:/var/lib/grafana
+      - ./grafana-provisioning:/etc/grafana/provisioning
+    depends_on:
+      - prometheus
+    networks:
+      - textapp-dev-network
+    restart: unless-stopped
+
+  # Jupyter notebook for development and testing
+  jupyter:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.dev
+    container_name: text_to_audiobook_jupyter_dev
+    environment:
+      - PYTHONPATH=/app
+      - LOG_LEVEL=DEBUG
+    ports:
+      - "8888:8888"
+    volumes:
+      - ..:/app
+    networks:
+      - textapp-dev-network
+    restart: unless-stopped
+    command: ["jupyter", "notebook", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root", "--NotebookApp.token=''"]
+
+volumes:
+  redis-dev-data:
+  prometheus-dev-data:
+  grafana-dev-data:
+
+networks:
+  textapp-dev-network:
+    driver: bridge
