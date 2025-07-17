@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  # Simple Application Service for Testing
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.simple
+    container_name: text_to_audiobook_simple
+    environment:
+      - OLLAMA_URL=http://host.docker.internal:11434/api/generate
+      - LOG_LEVEL=INFO
+      - PYTHONPATH=/app
+      - PROCESSING_MODE=local
+    volumes:
+      - ./input:/app/input
+      - ./output:/app/output
+      - ./logs:/app/logs
+    stdin_open: true
+    tty: true
+    command: bash
+
+networks:
+  default:
+    name: text_to_audiobook_simple

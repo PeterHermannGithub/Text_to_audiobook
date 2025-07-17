@@ -1,0 +1,49 @@
+# Prometheus Configuration for Text-to-Audiobook Monitoring
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  # - "first_rules.yml"
+  # - "second_rules.yml"
+
+scrape_configs:
+  # Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Text-to-Audiobook Application
+  - job_name: 'text-to-audiobook-app'
+    static_configs:
+      - targets: ['app:8000']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  # Redis Monitoring
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:6379']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  # Kafka Monitoring (if available)
+  - job_name: 'kafka'
+    static_configs:
+      - targets: ['kafka:9092']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  # Spark Master Monitoring
+  - job_name: 'spark-master'
+    static_configs:
+      - targets: ['spark-master:8080']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  # Spark Worker Monitoring
+  - job_name: 'spark-worker'
+    static_configs:
+      - targets: ['spark-worker:8081']
+    metrics_path: '/metrics'
+    scrape_interval: 30s

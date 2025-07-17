@@ -18,7 +18,7 @@ spacy==3.7.2
 # Big Data Processing Dependencies
 pyspark==3.4.0
 kafka-python==2.0.2
-py4j==0.10.9.5
+py4j==0.10.9.7
 
 # Apache Airflow Dependencies
 apache-airflow==2.5.0

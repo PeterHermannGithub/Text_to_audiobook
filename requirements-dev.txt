@@ -2,7 +2,7 @@
 # Quality tools, testing frameworks, and development utilities
 
 # Code Quality and Formatting
-black==23.12.1                 # Code formatter
+black==24.8.0                 # Code formatter
 flake8==6.1.0                 # Linting and style checking
 mypy==1.8.0                   # Static type checking
 isort==5.13.2                 # Import sorting
@@ -30,7 +30,7 @@ pytest-timeout==2.2.0         # Test timeout handling
 # Testing Utilities
 factory-boy==3.3.0            # Test data generation
 faker==21.0.0                  # Fake data generation
-responses==0.24.1             # HTTP request mocking
+responses==0.25.7             # HTTP request mocking
 freezegun==1.4.0              # Time mocking utilities
 
 # Development Tools
@@ -53,18 +53,18 @@ python-dotenv==1.0.0          # Environment variable management
 
 # Performance and Profiling
 memory-profiler==0.61.0       # Memory usage profiling
-line-profiler==4.1.1          # Line-by-line profiling
+# line-profiler==4.1.1          # Line-by-line profiling (temporarily disabled due to compilation issues)
 py-spy==0.3.14                # Sampling profiler
 
 # Type Checking Enhancements
-types-requests==2.31.0.20231231  # Type stubs for requests
+types-requests==2.32.4.20250611  # Type stubs for requests
 types-redis==4.6.0.11         # Type stubs for redis
 types-beautifulsoup4==4.12.0.7   # Type stubs for BeautifulSoup
 
 # Security and Compliance
-safety==2.3.5                 # Dependency vulnerability scanning
+safety==3.6.0                 # Dependency vulnerability scanning
 pip-audit==2.6.1              # Package audit tool
-semgrep==1.50.0               # Static analysis security scanner
+# semgrep==1.80.0               # Static analysis security scanner (temporarily disabled due to dependency conflicts)
 
 # Build and Packaging
 build==1.0.3                  # Build tool

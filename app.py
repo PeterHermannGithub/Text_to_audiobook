@@ -59,10 +59,41 @@ from typing import Dict, Any, Optional
 
 from src.text_processing.text_extractor import TextExtractor
 from src.text_structurer import TextStructurer
-from src.distributed_pipeline_orchestrator import DistributedPipelineOrchestrator, DistributedProcessingConfig
-from src.output.voice_caster import VoiceCaster
-from src.output.audio_generator import AudioGenerator
-from src.emotion_annotator import EmotionAnnotator
+
+# Optional imports for distributed processing
+try:
+    from src.distributed_pipeline_orchestrator import DistributedPipelineOrchestrator, DistributedProcessingConfig
+    DISTRIBUTED_AVAILABLE = True
+except ImportError:
+    DISTRIBUTED_AVAILABLE = False
+    DistributedPipelineOrchestrator = None
+    DistributedProcessingConfig = None
+    print("WARNING: Distributed processing not available. Running in local mode only.")
+
+try:
+    from src.output.voice_caster import VoiceCaster
+    VOICE_CASTING_AVAILABLE = True
+except ImportError:
+    VOICE_CASTING_AVAILABLE = False
+    VoiceCaster = None
+    print("WARNING: Voice casting not available.")
+
+try:
+    from src.output.audio_generator import AudioGenerator
+    AUDIO_GENERATION_AVAILABLE = True
+except ImportError:
+    AUDIO_GENERATION_AVAILABLE = False
+    AudioGenerator = None
+    print("WARNING: Audio generation not available.")
+
+try:
+    from src.emotion_annotator import EmotionAnnotator
+    EMOTION_ANNOTATION_AVAILABLE = True
+except ImportError:
+    EMOTION_ANNOTATION_AVAILABLE = False
+    EmotionAnnotator = None
+    print("WARNING: Emotion annotation not available.")
+
 from config import settings
 
 def main() -> None:
@@ -204,26 +235,33 @@ def main() -> None:
     
     # Handle distributed processing mode
     if args.distributed:
-        args.processing_mode = "distributed"
-        args.enable_kafka = True
-        args.enable_spark = True
-        args.enable_caching = True
-        args.enable_monitoring = True
-        print("🚀 Distributed Processing Mode Enabled")
-        print("   Using Kafka, Spark, LLM Pool, and Redis for scalable processing")
+        if not DISTRIBUTED_AVAILABLE:
+            print("❌ Distributed processing requested but not available. Falling back to local mode.")
+            args.processing_mode = "local"
+            args.distributed = False
+        else:
+            args.processing_mode = "distributed"
+            args.enable_kafka = True
+            args.enable_spark = True
+            args.enable_caching = True
+            args.enable_monitoring = True
+            print("🚀 Distributed Processing Mode Enabled")
+            print("   Using Kafka, Spark, LLM Pool, and Redis for scalable processing")
     
-    # Create distributed processing configuration
-    distributed_config = DistributedProcessingConfig(
-        processing_mode=args.processing_mode,
-        enable_kafka=args.enable_kafka,
-        enable_spark=args.enable_spark,
-        enable_caching=args.enable_caching,
-        enable_monitoring=args.enable_monitoring,
-        chunk_size=args.chunk_size,
-        quality_threshold=args.quality_threshold,
-        llm_pool_size=args.workers,
-        performance_monitoring=args.performance_monitoring
-    )
+    # Create distributed processing configuration only if available
+    distributed_config = None
+    if DISTRIBUTED_AVAILABLE:
+        distributed_config = DistributedProcessingConfig(
+            processing_mode=args.processing_mode,
+            enable_kafka=args.enable_kafka,
+            enable_spark=args.enable_spark,
+            enable_caching=args.enable_caching,
+            enable_monitoring=args.enable_monitoring,
+            chunk_size=args.chunk_size,
+            quality_threshold=args.quality_threshold,
+            llm_pool_size=args.workers,
+            performance_monitoring=args.performance_monitoring
+        )
 
     if not args.input_file and not args.structured_input_file:
         parser.error("Either input_file or --structured-input-file must be provided.")
@@ -257,8 +295,12 @@ def main() -> None:
             print("Text extracted successfully.")
 
             # Initialize text processing engine based on mode
-            if args.processing_mode == "local":
-                print("📝 Using local text structuring...")
+            if args.processing_mode == "local" or not DISTRIBUTED_AVAILABLE:
+                if not DISTRIBUTED_AVAILABLE and args.processing_mode != "local":
+                    print("⚠️  Distributed processing not available, using local processing...")
+                else:
+                    print("📝 Using local text structuring...")
+                    
                 structurer = TextStructurer(
                     engine=args.engine,
                     project_id=args.project_id,
@@ -347,50 +389,59 @@ def main() -> None:
         print(json.dumps(structured_text[:5], indent=2))
 
         if args.add_emotions:
-            print("🎭 Adding emotional annotations...")
-            
-            # Get LLM orchestrator based on processing mode
-            if args.processing_mode == "local":
-                # For local processing, use the structurer's LLM orchestrator
-                emotion_annotator = EmotionAnnotator(structurer.llm_orchestrator)
+            if not EMOTION_ANNOTATION_AVAILABLE:
+                print("⚠️  Emotion annotation requested but not available. Skipping emotion annotation.")
             else:
-                # For distributed processing, create a new LLM orchestrator
-                from src.attribution.llm.orchestrator import LLMOrchestrator
-                llm_orchestrator = LLMOrchestrator({
-                    'engine': args.engine,
-                    'project_id': args.project_id,
-                    'location': args.location,
-                    'local_model': args.model
-                })
-                emotion_annotator = EmotionAnnotator(llm_orchestrator)
-            
-            structured_text = emotion_annotator.annotate_emotions(structured_text)
+                print("🎭 Adding emotional annotations...")
+                
+                # Get LLM orchestrator based on processing mode
+                if args.processing_mode == "local":
+                    # For local processing, use the structurer's LLM orchestrator
+                    emotion_annotator = EmotionAnnotator(structurer.llm_orchestrator)
+                else:
+                    # For distributed processing, create a new LLM orchestrator
+                    from src.attribution.llm.orchestrator import LLMOrchestrator
+                    llm_orchestrator = LLMOrchestrator({
+                        'engine': args.engine,
+                        'project_id': args.project_id,
+                        'location': args.location,
+                        'local_model': args.model
+                    })
+                    emotion_annotator = EmotionAnnotator(llm_orchestrator)
+                
+                structured_text = emotion_annotator.annotate_emotions(structured_text)
 
         if not args.skip_voice_casting:
-            print("\n🎙️  Casting voices for characters... (This may take a moment)")
-            voice_caster = VoiceCaster(
-                engine=args.engine,
-                project_id=args.project_id,
-                location=args.location,
-                local_model=args.model,
-                voice_quality=args.voice_quality
-            )
-            
-            # Voice casting works with the structured text regardless of processing mode
-            voice_profiles = voice_caster.cast_voices(structured_text)
+            if not VOICE_CASTING_AVAILABLE:
+                print("⚠️  Voice casting requested but not available. Skipping voice casting.")
+            else:
+                print("\n🎙️  Casting voices for characters... (This may take a moment)")
+                voice_caster = VoiceCaster(
+                    engine=args.engine,
+                    project_id=args.project_id,
+                    location=args.location,
+                    local_model=args.model,
+                    voice_quality=args.voice_quality
+                )
+                
+                # Voice casting works with the structured text regardless of processing mode
+                voice_profiles = voice_caster.cast_voices(structured_text)
 
-            voice_profiles_output_path = os.path.join(settings.OUTPUT_DIR, output_filename_base + "_voice_profiles.json")
-            with open(voice_profiles_output_path, 'w', encoding='utf-8') as f:
-                json.dump(voice_profiles, f, indent=2)
-            
-            print(f"\n📁 Voice profiles saved to {voice_profiles_output_path}")
-            print("\n--- Suggested Voice Profiles Sample ---")
-            print(json.dumps(voice_profiles, indent=2))
+                voice_profiles_output_path = os.path.join(settings.OUTPUT_DIR, output_filename_base + "_voice_profiles.json")
+                with open(voice_profiles_output_path, 'w', encoding='utf-8') as f:
+                    json.dump(voice_profiles, f, indent=2)
+                
+                print(f"\n📁 Voice profiles saved to {voice_profiles_output_path}")
+                print("\n--- Suggested Voice Profiles Sample ---")
+                print(json.dumps(voice_profiles, indent=2))
 
-            if args.output_filename:
-                print(f"\n🎧 Generating audiobook: {args.output_filename}")
-                audio_generator = AudioGenerator(project_id=args.project_id, location=args.location)
-                audio_generator.generate_audiobook(structured_text, voice_profiles, args.output_filename)
+                if args.output_filename:
+                    if not AUDIO_GENERATION_AVAILABLE:
+                        print("⚠️  Audio generation requested but not available. Skipping audio generation.")
+                    else:
+                        print(f"\n🎧 Generating audiobook: {args.output_filename}")
+                        audio_generator = AudioGenerator(project_id=args.project_id, location=args.location)
+                        audio_generator.generate_audiobook(structured_text, voice_profiles, args.output_filename)
         else:
             print("\n⏭️  Skipping voice casting as requested.")
 

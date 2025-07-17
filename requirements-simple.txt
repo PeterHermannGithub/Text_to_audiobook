@@ -1,0 +1,26 @@
+# Simplified requirements for core functionality testing
+# Text Processing Dependencies
+PyMuPDF==1.23.26
+python-docx==1.1.2
+EbookLib==0.18
+mobi==0.3
+beautifulsoup4==4.12.3
+
+# Core Processing Dependencies
+requests==2.32.3
+tqdm==4.66.4
+tenacity==8.2.3
+fuzzywuzzy==0.18.0
+python-Levenshtein==0.25.1
+spacy==3.7.2
+
+# Basic utilities
+click==8.1.7
+rich==13.7.0
+python-dotenv==1.0.0
+
+# Optional - Google Cloud (for GCP engine)
+google-cloud-aiplatform==1.55.0
+google-generativeai==0.7.1
+google-cloud-texttospeech==2.16.2
+pydub==0.25.1

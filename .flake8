@@ -30,23 +30,16 @@ exclude =
 
 # Error codes to ignore
 ignore = 
-    # Black compatibility
-    E203,  # Whitespace before ':'
-    W503,  # Line break before binary operator
-    
-    # Documentation related (handled by pydocstyle)
-    D100,  # Missing docstring in public module
-    D104,  # Missing docstring in public package
-    D105,  # Missing docstring in magic method
-    D107,  # Missing docstring in __init__
-    
-    # Specific cases
-    F401,  # Module imported but unused (in __init__.py files)
-    F403,  # Star import used (specific cases)
-    
-    # Type annotation related (handled by mypy)
-    ANN101,  # Missing type annotation for self
-    ANN102,  # Missing type annotation for cls
+    E203,
+    W503,
+    D100,
+    D104,
+    D105,
+    D107,
+    F401,
+    F403,
+    ANN101,
+    ANN102
 
 # Per-file ignores
 per-file-ignores =

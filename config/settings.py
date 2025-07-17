@@ -1,7 +1,10 @@
 # config/settings.py
+import os
 
 # LLM Configuration
-OLLAMA_URL = "http://localhost:11434/api/generate"
+# Use environment variable for Docker compatibility, fallback to localhost
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "localhost")
+OLLAMA_URL = f"http://{OLLAMA_HOST}:11434/api/generate"
 DEFAULT_LOCAL_MODEL = "deepseek-v2:16b"
 GCP_LLM_MODEL = "gemini-1.0-pro"
 DEFAULT_LLM_ENGINE = "local"
