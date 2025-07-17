@@ -1,0 +1,76 @@
+# Text-to-Audiobook Development Dependencies
+# Quality tools, testing frameworks, and development utilities
+
+# Code Quality and Formatting
+black==23.12.1                 # Code formatter
+flake8==6.1.0                 # Linting and style checking
+mypy==1.8.0                   # Static type checking
+isort==5.13.2                 # Import sorting
+bandit==1.7.5                 # Security vulnerability scanning
+autopep8==2.0.4               # PEP 8 code formatting
+pycodestyle==2.11.1           # Style guide enforcement
+
+# Advanced Linting
+flake8-docstrings==1.7.0      # Docstring linting
+flake8-annotations==3.0.1     # Type annotation checking
+flake8-bugbear==23.12.2       # Additional bug detection
+flake8-comprehensions==3.14.0 # List/dict comprehension improvements
+flake8-simplify==0.21.0       # Code simplification suggestions
+
+# Testing Framework
+pytest==7.4.3                 # Testing framework
+pytest-cov==4.1.0             # Coverage reporting
+pytest-xdist==3.5.0           # Parallel test execution
+pytest-mock==3.12.0           # Mocking utilities
+pytest-asyncio==0.23.2        # Async testing support
+pytest-benchmark==4.0.0       # Performance benchmarking
+pytest-html==4.1.1            # HTML test reports
+pytest-timeout==2.2.0         # Test timeout handling
+
+# Testing Utilities
+factory-boy==3.3.0            # Test data generation
+faker==21.0.0                  # Fake data generation
+responses==0.24.1             # HTTP request mocking
+freezegun==1.4.0              # Time mocking utilities
+
+# Development Tools
+pre-commit==3.6.0             # Git hooks for quality checks
+jupyter==1.0.0                # Interactive development
+ipython==8.18.1               # Enhanced Python shell
+notebook==7.0.6               # Jupyter notebook server
+
+# Documentation
+sphinx==7.2.6                 # Documentation generation
+sphinx-rtd-theme==2.0.0       # ReadTheDocs theme
+sphinx-autodoc-typehints==1.25.2  # Type hint documentation
+myst-parser==2.0.0            # Markdown parser for Sphinx
+
+# Development Utilities
+watchdog==3.0.0               # File system monitoring
+rich==13.7.0                  # Rich terminal output
+click==8.1.7                  # CLI development
+python-dotenv==1.0.0          # Environment variable management
+
+# Performance and Profiling
+memory-profiler==0.61.0       # Memory usage profiling
+line-profiler==4.1.1          # Line-by-line profiling
+py-spy==0.3.14                # Sampling profiler
+
+# Type Checking Enhancements
+types-requests==2.31.0.20231231  # Type stubs for requests
+types-redis==4.6.0.11         # Type stubs for redis
+types-beautifulsoup4==4.12.0.7   # Type stubs for BeautifulSoup
+
+# Security and Compliance
+safety==2.3.5                 # Dependency vulnerability scanning
+pip-audit==2.6.1              # Package audit tool
+semgrep==1.50.0               # Static analysis security scanner
+
+# Build and Packaging
+build==1.0.3                  # Build tool
+twine==4.0.2                  # Package uploading
+wheel==0.42.0                 # Wheel packaging format
+
+# Dependency Management
+pip-tools==7.3.0              # Dependency management
+pipdeptree==2.13.1            # Dependency tree visualization

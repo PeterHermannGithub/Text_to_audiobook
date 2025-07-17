@@ -1,0 +1,174 @@
+# Text-to-Audiobook Flake8 Configuration
+# Comprehensive linting rules and style checking
+
+[flake8]
+# Basic configuration
+max-line-length = 88
+max-complexity = 12
+statistics = true
+count = true
+show-source = true
+show-pep8 = true
+
+# File and directory exclusions
+exclude = 
+    .git,
+    __pycache__,
+    .pytest_cache,
+    .mypy_cache,
+    .tox,
+    build,
+    dist,
+    venv,
+    env,
+    ENV,
+    logs,
+    output,
+    input,
+    *.egg-info,
+    .venv
+
+# Error codes to ignore
+ignore = 
+    # Black compatibility
+    E203,  # Whitespace before ':'
+    W503,  # Line break before binary operator
+    
+    # Documentation related (handled by pydocstyle)
+    D100,  # Missing docstring in public module
+    D104,  # Missing docstring in public package
+    D105,  # Missing docstring in magic method
+    D107,  # Missing docstring in __init__
+    
+    # Specific cases
+    F401,  # Module imported but unused (in __init__.py files)
+    F403,  # Star import used (specific cases)
+    
+    # Type annotation related (handled by mypy)
+    ANN101,  # Missing type annotation for self
+    ANN102,  # Missing type annotation for cls
+
+# Per-file ignores
+per-file-ignores =
+    # __init__.py files can have unused imports
+    __init__.py:F401,D100,D104
+    
+    # Test files can have additional flexibility
+    tests/*.py:D100,D101,D102,D103,S101,ANN001,ANN201
+    test_*.py:D100,D101,D102,D103,S101,ANN001,ANN201
+    
+    # Configuration files
+    config/*.py:D100,D101
+    
+    # Legacy files (to be updated gradually)
+    src/text_structurer.py:ANN001,ANN201
+    src/text_processing/text_extractor.py:ANN001,ANN201
+    
+    # Distributed processing files (newer, should be strict)
+    src/distributed_pipeline_orchestrator.py:
+    src/kafka/*.py:
+    src/spark/*.py:
+    src/monitoring/*.py:
+
+# Plugin configurations
+# Docstring requirements
+docstring-convention = google
+doctests = true
+
+# Import checking
+application-import-names = src,config,tests
+import-order-style = pycharm
+
+# Complexity limits
+max-cognitive-complexity = 15
+max-expression-complexity = 10
+
+# String quote preferences
+inline-quotes = double
+multiline-quotes = double
+docstring-quotes = double
+avoid-escape = true
+
+# Security and bug detection (bandit integration)
+# These are handled by bandit, but we list them for completeness
+select = 
+    # Pyflakes
+    F,
+    # Pycodestyle errors
+    E,
+    # Pycodestyle warnings  
+    W,
+    # McCabe complexity
+    C,
+    # Naming conventions
+    N,
+    # Docstring conventions (pydocstyle)
+    D,
+    # Import conventions
+    I,
+    # Annotations
+    ANN,
+    # Bugbear
+    B,
+    # Comprehensions
+    C4,
+    # Simplify
+    SIM,
+    # Security (basic)
+    S
+
+# Specific rule configurations
+# Documentation requirements
+require-return-annotation = true
+require-yield-annotation = true
+arg-type-hint-in-docstring = false
+arg-type-hint-in-signature = true
+
+# Import organization
+force-single-line = false
+multi-line-output = 3
+include-trailing-comma = true
+force-grid-wrap = 0
+use-parentheses = true
+line-length = 88
+
+# Complexity thresholds
+max-returns = 6
+max-branches = 12
+max-arguments = 8
+max-local-variables = 15
+max-statements = 50
+max-parents = 7
+max-attributes = 7
+max-public-methods = 20
+max-bool-expr = 5
+max-nested-blocks = 5
+max-string-usages = 4
+max-try-body-length = 5
+
+# Additional checks
+check-untyped-defs = true
+check-typed-defs = true
+strict-optional = true
+warn-redundant-casts = true
+warn-unused-ignores = true
+warn-return-any = true
+warn-unreachable = true
+
+# Performance related
+hang-closing = true
+verbose = 1
+jobs = auto
+
+# Extensions and plugins
+enable-extensions = 
+    # Flake8 bugbear
+    B,
+    # Flake8 comprehensions  
+    C4,
+    # Flake8 docstrings
+    D,
+    # Flake8 annotations
+    ANN,
+    # Flake8 simplify
+    SIM

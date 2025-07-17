@@ -1,0 +1,176 @@
+# Text-to-Audiobook Pre-commit Configuration
+# Automated quality checks that run before each commit
+
+repos:
+  # Pre-commit hooks for general file handling
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: ^(logs/|output/|input/)
+      - id: end-of-file-fixer
+        exclude: ^(logs/|output/|input/)
+      - id: check-yaml
+        exclude: ^docker/
+      - id: check-json
+        exclude: ^(logs/|output/|input/)
+      - id: check-toml
+      - id: check-xml
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+      - id: check-case-conflict
+      - id: check-merge-conflict
+      - id: debug-statements
+      - id: requirements-txt-fixer
+        files: requirements.*\.txt$
+
+  # Python code formatting with Black
+  - repo: https://github.com/psf/black
+    rev: 23.12.1
+    hooks:
+      - id: black
+        language_version: python3
+        exclude: ^(venv/|build/|dist/|logs/|output/|input/)
+        args: [--line-length=88]
+
+  # Import sorting with isort
+  - repo: https://github.com/pycqa/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+        exclude: ^(venv/|build/|dist/|logs/|output/|input/)
+        args: [--profile=black, --line-length=88]
+
+  # Linting with flake8
+  - repo: https://github.com/pycqa/flake8
+    rev: 6.1.0
+    hooks:
+      - id: flake8
+        exclude: ^(venv/|build/|dist/|logs/|output/|input/)
+        additional_dependencies:
+          - flake8-docstrings
+          - flake8-annotations
+          - flake8-bugbear
+          - flake8-comprehensions
+          - flake8-simplify
+        args:
+          - --max-line-length=88
+          - --extend-ignore=E203,W503,D100,D104
+          - --exclude=venv,build,dist,logs,output,input,__pycache__
+          - --per-file-ignores=__init__.py:F401,D100
+
+  # Type checking with MyPy
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.8.0
+    hooks:
+      - id: mypy
+        exclude: ^(venv/|build/|dist/|logs/|output/|input/|tests/)
+        additional_dependencies:
+          - types-requests
+          - types-redis
+          - types-beautifulsoup4
+        args:
+          - --config-file=pyproject.toml
+          - --strict
+          - --ignore-missing-imports
+
+  # Security scanning with Bandit
+  - repo: https://github.com/pycqa/bandit
+    rev: 1.7.5
+    hooks:
+      - id: bandit
+        exclude: ^(tests/|venv/|build/|dist/|logs/|output/|input/)
+        args: [-c, pyproject.toml]
+
+  # Dependency vulnerability scanning
+  - repo: https://github.com/pyupio/safety
+    rev: 2.3.5
+    hooks:
+      - id: safety
+        args: [--ignore=70612]  # Ignore specific known issues if needed
+
+  # Documentation checks
+  - repo: https://github.com/pycqa/pydocstyle
+    rev: 6.3.0
+    hooks:
+      - id: pydocstyle
+        exclude: ^(tests/|venv/|build/|dist/|logs/|output/|input/)
+        args:
+          - --convention=google
+          - --add-ignore=D100,D104,D105,D107
+
+  # Docker-specific checks
+  - repo: https://github.com/hadolint/hadolint
+    rev: v2.12.0
+    hooks:
+      - id: hadolint-docker
+        files: docker/Dockerfile*
+
+  # YAML formatting
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v4.0.0-alpha.8
+    hooks:
+      - id: prettier
+        files: \.(yml|yaml)$
+        exclude: ^docker/
+
+  # Markdown formatting
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.38.0
+    hooks:
+      - id: markdownlint
+        args: [--fix]
+        exclude: ^(venv/|build/|dist/|logs/|output/|input/)
+
+  # License header checking
+  - repo: https://github.com/Lucas-C/pre-commit-hooks
+    rev: v1.5.4
+    hooks:
+      - id: insert-license
+        files: \.py$
+        exclude: ^(tests/|venv/|build/|dist/|logs/|output/|input/)
+        args:
+          - --license-filepath
+          - LICENSE_HEADER.txt
+          - --comment-style
+          - "#"
+
+  # Spell checking for documentation
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.2.6
+    hooks:
+      - id: codespell
+        args: [--write-changes]
+        exclude: ^(venv/|build/|dist/|logs/|output/|input/|\.git/)
+
+  # Python upgrade suggestions
+  - repo: https://github.com/asottile/pyupgrade
+    rev: v3.15.0
+    hooks:
+      - id: pyupgrade
+        args: [--py38-plus]
+        exclude: ^(venv/|build/|dist/|logs/|output/|input/)
+
+  # Check for common Python mistakes
+  - repo: https://github.com/asottile/yesqa
+    rev: v1.5.0
+    hooks:
+      - id: yesqa
+        exclude: ^(venv/|build/|dist/|logs/|output/|input/)
+
+# Global configuration
+default_language_version:
+  python: python3.11
+
+# CI configuration
+ci:
+  autofix_commit_msg: |
+    [pre-commit.ci] auto fixes from pre-commit hooks
+
+    for more information, see https://pre-commit.ci
+  autofix_prs: true
+  autoupdate_branch: ''
+  autoupdate_commit_msg: '[pre-commit.ci] pre-commit autoupdate'
+  autoupdate_schedule: weekly
+  skip: []
+  submodules: false

@@ -1,0 +1,411 @@
+# Security Scanning & Dependency Updates
+# Automated security monitoring and dependency management
+
+name: Security & Dependencies
+
+on:
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  push:
+    paths:
+      - 'requirements*.txt'
+      - 'pyproject.toml'
+      - '.github/workflows/security.yml'
+  workflow_dispatch:
+    inputs:
+      scan_type:
+        description: 'Type of security scan'
+        required: false
+        default: 'full'
+        type: choice
+        options:
+        - full
+        - dependencies-only
+        - code-only
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  # ============================================================================
+  # DEPENDENCY VULNERABILITY SCANNING
+  # ============================================================================
+  
+  dependency-scan:
+    name: Dependency Security Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    permissions:
+      contents: read
+      security-events: write
+      pull-requests: write
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: pip
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt -r requirements-dev.txt
+    
+    - name: Run Safety scan
+      run: |
+        mkdir -p security-reports
+        safety check --json --output security-reports/safety-scan.json
+        safety check --output security-reports/safety-scan.txt
+      continue-on-error: true
+    
+    - name: Run pip-audit scan
+      run: |
+        pip-audit --format=json --output=security-reports/pip-audit.json
+        pip-audit --format=cyclonedx-json --output=security-reports/sbom.json
+      continue-on-error: true
+    
+    - name: Generate dependency tree
+      run: |
+        pipdeptree --json > security-reports/dependency-tree.json
+        pipdeptree > security-reports/dependency-tree.txt
+    
+    - name: Check for known vulnerabilities
+      run: |
+        echo "## 🔒 Security Scan Results" > security-reports/summary.md
+        echo "- **Safety scan**: $(safety check &>/dev/null && echo '✅ No vulnerabilities' || echo '⚠️ Vulnerabilities found')" >> security-reports/summary.md
+        echo "- **pip-audit**: $(pip-audit &>/dev/null && echo '✅ No vulnerabilities' || echo '⚠️ Vulnerabilities found')" >> security-reports/summary.md
+        echo "- **Scan date**: $(date)" >> security-reports/summary.md
+    
+    - name: Upload security reports
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: security-reports
+        path: security-reports/
+        retention-days: 90
+    
+    - name: Comment on PR if vulnerabilities found
+      if: github.event_name == 'pull_request' && failure()
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          try {
+            const summary = fs.readFileSync('security-reports/summary.md', 'utf8');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `🔒 **Security Scan Results**\n\n${summary}\n\nPlease review the security reports in the workflow artifacts.`
+            });
+          } catch (error) {
+            console.log('Could not read security summary:', error.message);
+          }
+
+  # ============================================================================
+  # CODE SECURITY ANALYSIS
+  # ============================================================================
+  
+  code-security-scan:
+    name: Code Security Analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: pip
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements-dev.txt
+    
+    - name: Run Bandit security scan
+      run: |
+        mkdir -p security-reports
+        bandit -r src/ -f json -o security-reports/bandit-detailed.json
+        bandit -r src/ -f txt -o security-reports/bandit-detailed.txt
+        bandit -r src/ -f sarif -o security-reports/bandit-results.sarif
+      continue-on-error: true
+    
+    - name: Run Semgrep scan
+      run: |
+        semgrep --config=auto --json --output=security-reports/semgrep-results.json src/
+        semgrep --config=auto --sarif --output=security-reports/semgrep-results.sarif src/
+      continue-on-error: true
+    
+    - name: Upload Bandit results to GitHub Security
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: security-reports/bandit-results.sarif
+        category: bandit
+    
+    - name: Upload Semgrep results to GitHub Security
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: security-reports/semgrep-results.sarif
+        category: semgrep
+    
+    - name: Generate security summary
+      run: |
+        echo "## 🛡️ Code Security Analysis" > security-reports/code-security-summary.md
+        echo "- **Bandit scan**: $(bandit -r src/ &>/dev/null && echo '✅ No issues' || echo '⚠️ Issues found')" >> security-reports/code-security-summary.md
+        echo "- **Semgrep scan**: $(semgrep --config=auto src/ &>/dev/null && echo '✅ No issues' || echo '⚠️ Issues found')" >> security-reports/code-security-summary.md
+        echo "- **Analysis date**: $(date)" >> security-reports/code-security-summary.md
+    
+    - name: Upload security analysis reports
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: code-security-reports
+        path: security-reports/
+        retention-days: 90
+
+  # ============================================================================
+  # DEPENDENCY UPDATES
+  # ============================================================================
+  
+  dependency-updates:
+    name: Automated Dependency Updates
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    
+    permissions:
+      contents: write
+      pull-requests: write
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install pip-tools
+      run: |
+        python -m pip install --upgrade pip pip-tools
+    
+    - name: Check for dependency updates
+      id: check-updates
+      run: |
+        # Create backup of current requirements
+        cp requirements.txt requirements.txt.bak
+        cp requirements-dev.txt requirements-dev.txt.bak
+        
+        # Update dependencies
+        pip-compile --upgrade requirements.in
+        pip-compile --upgrade requirements-dev.in
+        
+        # Check if there are changes
+        if ! cmp -s requirements.txt requirements.txt.bak || ! cmp -s requirements-dev.txt requirements-dev.txt.bak; then
+          echo "updates_available=true" >> $GITHUB_OUTPUT
+          echo "Updates found in dependencies"
+        else
+          echo "updates_available=false" >> $GITHUB_OUTPUT
+          echo "No updates available"
+        fi
+    
+    - name: Test updated dependencies
+      if: steps.check-updates.outputs.updates_available == 'true'
+      run: |
+        # Install updated dependencies
+        pip install -r requirements.txt -r requirements-dev.txt
+        
+        # Run basic tests to ensure compatibility
+        python -c "import src; print('✅ Package imports successfully')"
+        python -m pytest tests/unit/ --maxfail=5 -x --tb=short
+    
+    - name: Create pull request for dependency updates
+      if: steps.check-updates.outputs.updates_available == 'true'
+      uses: peter-evans/create-pull-request@v5
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        commit-message: "chore: automated dependency updates"
+        title: "🔄 Automated Dependency Updates"
+        body: |
+          ## 🔄 Automated Dependency Updates
+          
+          This PR contains automated updates to project dependencies.
+          
+          ### Changes
+          - Updated requirements.txt with latest compatible versions
+          - Updated requirements-dev.txt with latest development dependencies
+          - All basic tests pass with new dependency versions
+          
+          ### Security
+          - Dependency security scan will be run automatically
+          - Please review the changes before merging
+          
+          **Auto-generated by dependency update workflow**
+        branch: automated-dependency-updates
+        delete-branch: true
+        labels: |
+          dependencies
+          automated
+          security
+
+  # ============================================================================
+  # DOCKER IMAGE SECURITY SCAN
+  # ============================================================================
+  
+  docker-security-scan:
+    name: Docker Security Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event.inputs.scan_type != 'dependencies-only'
+    
+    permissions:
+      contents: read
+      security-events: write
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Build Docker image for scanning
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: docker/Dockerfile
+        push: false
+        tags: text-to-audiobook:security-scan
+        load: true
+    
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: 'text-to-audiobook:security-scan'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+    
+    - name: Run Trivy filesystem scan
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'sarif'
+        output: 'trivy-fs-results.sarif'
+    
+    - name: Upload Trivy scan results
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: 'trivy-results.sarif'
+        category: 'trivy-image'
+    
+    - name: Upload Trivy filesystem results
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: 'trivy-fs-results.sarif'
+        category: 'trivy-filesystem'
+    
+    - name: Generate Docker security summary
+      run: |
+        mkdir -p security-reports
+        echo "## 🐳 Docker Security Scan" > security-reports/docker-security-summary.md
+        echo "- **Image scan**: Completed with Trivy" >> security-reports/docker-security-summary.md
+        echo "- **Filesystem scan**: Completed with Trivy" >> security-reports/docker-security-summary.md
+        echo "- **Scan date**: $(date)" >> security-reports/docker-security-summary.md
+        echo "- **Image**: text-to-audiobook:security-scan" >> security-reports/docker-security-summary.md
+    
+    - name: Upload Docker security reports
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: docker-security-reports
+        path: security-reports/
+        retention-days: 90
+
+  # ============================================================================
+  # SECURITY SUMMARY & NOTIFICATIONS
+  # ============================================================================
+  
+  security-summary:
+    name: Security Summary
+    runs-on: ubuntu-latest
+    needs: [dependency-scan, code-security-scan, docker-security-scan]
+    if: always()
+    timeout-minutes: 5
+    
+    steps:
+    - name: Download all security reports
+      uses: actions/download-artifact@v3
+      with:
+        path: all-security-reports
+    
+    - name: Generate comprehensive security summary
+      run: |
+        echo "# 🔒 Comprehensive Security Report" > security-overview.md
+        echo "Generated on: $(date)" >> security-overview.md
+        echo "" >> security-overview.md
+        
+        echo "## Job Status" >> security-overview.md
+        echo "- **Dependency Scan**: ${{ needs.dependency-scan.result }}" >> security-overview.md
+        echo "- **Code Security Scan**: ${{ needs.code-security-scan.result }}" >> security-overview.md
+        echo "- **Docker Security Scan**: ${{ needs.docker-security-scan.result }}" >> security-overview.md
+        echo "" >> security-overview.md
+        
+        echo "## Summary" >> security-overview.md
+        if [[ "${{ needs.dependency-scan.result }}" == "success" && "${{ needs.code-security-scan.result }}" == "success" && "${{ needs.docker-security-scan.result }}" == "success" ]]; then
+          echo "✅ All security scans completed successfully" >> security-overview.md
+        else
+          echo "⚠️ Some security scans reported issues - review detailed reports" >> security-overview.md
+        fi
+        
+        echo "" >> security-overview.md
+        echo "## Action Items" >> security-overview.md
+        echo "1. Review detailed security reports in workflow artifacts" >> security-overview.md
+        echo "2. Address any high-severity vulnerabilities" >> security-overview.md
+        echo "3. Update dependencies if security updates are available" >> security-overview.md
+        echo "4. Review and approve automated dependency update PRs" >> security-overview.md
+    
+    - name: Upload comprehensive security overview
+      uses: actions/upload-artifact@v3
+      with:
+        name: security-overview
+        path: security-overview.md
+        retention-days: 90
+    
+    - name: Add to job summary
+      run: |
+        cat security-overview.md >> $GITHUB_STEP_SUMMARY
+    
+    - name: Notify on security issues
+      if: needs.dependency-scan.result == 'failure' || needs.code-security-scan.result == 'failure' || needs.docker-security-scan.result == 'failure'
+      run: |
+        echo "🚨 Security issues detected - notifications would be sent here"
+        # Integration with alerting systems (Slack, email, PagerDuty, etc.)
+        # Example:
+        # curl -X POST -H 'Content-type: application/json' \
+        #   --data '{"text":"🚨 Security scan failed in text-to-audiobook repository"}' \
+        #   $SLACK_WEBHOOK_URL

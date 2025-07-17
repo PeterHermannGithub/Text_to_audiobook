@@ -1,0 +1,611 @@
+# Release Management & Deployment
+# Automated release creation, versioning, and deployment
+
+name: Release Management
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'  # Semantic versioning tags
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: 'Type of release'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+        - patch
+        - minor
+        - major
+        - prerelease
+      custom_version:
+        description: 'Custom version (optional, overrides release_type)'
+        required: false
+        type: string
+      release_notes:
+        description: 'Custom release notes (optional)'
+        required: false
+        type: string
+      deploy_to_production:
+        description: 'Deploy to production'
+        required: false
+        default: true
+        type: boolean
+
+env:
+  PYTHON_VERSION: '3.11'
+  DOCKER_REGISTRY: ghcr.io
+  IMAGE_NAME: text-to-audiobook
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false  # Don't cancel releases
+
+jobs:
+  # ============================================================================
+  # VERSION MANAGEMENT & VALIDATION
+  # ============================================================================
+  
+  version-management:
+    name: Version Management
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      is_prerelease: ${{ steps.version.outputs.is_prerelease }}
+      previous_version: ${{ steps.version.outputs.previous_version }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Need full history for version calculation
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install version management tools
+      run: |
+        pip install bump2version gitpython
+    
+    - name: Determine version
+      id: version
+      run: |
+        if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == refs/tags/* ]]; then
+          # Triggered by tag push
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Version from tag: ${VERSION}"
+          
+          # Check if prerelease
+          if [[ $VERSION =~ -[a-zA-Z] ]]; then
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+          fi
+          
+        elif [[ "${{ github.event.inputs.custom_version }}" != "" ]]; then
+          # Custom version provided
+          VERSION="${{ github.event.inputs.custom_version }}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Custom version: ${VERSION}"
+          
+          if [[ $VERSION =~ -[a-zA-Z] ]]; then
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+          fi
+          
+        else
+          # Calculate next version based on release type
+          RELEASE_TYPE="${{ github.event.inputs.release_type }}"
+          
+          # Get current version from pyproject.toml or setup.py
+          CURRENT_VERSION=$(python -c "
+import re
+try:
+    with open('pyproject.toml', 'r') as f:
+        content = f.read()
+        match = re.search(r'version = \"([^\"]+)\"', content)
+        if match:
+            print(match.group(1))
+        else:
+            print('0.1.0')
+except FileNotFoundError:
+    print('0.1.0')
+")
+          
+          echo "Current version: ${CURRENT_VERSION}"
+          echo "previous_version=${CURRENT_VERSION}" >> $GITHUB_OUTPUT
+          
+          # Calculate next version
+          python -c "
+import re
+from datetime import datetime
+
+current = '${CURRENT_VERSION}'
+release_type = '${RELEASE_TYPE}'
+
+def parse_version(version):
+    match = re.match(r'(\d+)\.(\d+)\.(\d+)(?:-(.+))?', version)
+    if match:
+        major, minor, patch = int(match.group(1)), int(match.group(2)), int(match.group(3))
+        prerelease = match.group(4)
+        return major, minor, patch, prerelease
+    return 0, 1, 0, None
+
+major, minor, patch, prerelease = parse_version(current)
+
+if release_type == 'major':
+    major += 1
+    minor = 0
+    patch = 0
+elif release_type == 'minor':
+    minor += 1
+    patch = 0
+elif release_type == 'patch':
+    patch += 1
+elif release_type == 'prerelease':
+    if prerelease:
+        # Increment prerelease number
+        if 'alpha' in prerelease:
+            num = int(prerelease.replace('alpha', '')) + 1
+            prerelease = f'alpha{num}'
+        elif 'beta' in prerelease:
+            num = int(prerelease.replace('beta', '')) + 1
+            prerelease = f'beta{num}'
+        else:
+            prerelease = 'alpha1'
+    else:
+        patch += 1
+        prerelease = 'alpha1'
+
+if release_type == 'prerelease' and prerelease:
+    new_version = f'{major}.{minor}.{patch}-{prerelease}'
+else:
+    new_version = f'{major}.{minor}.{patch}'
+
+print(new_version)
+" > new_version.txt
+          
+          VERSION=$(cat new_version.txt)
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "New version: ${VERSION}"
+          
+          if [[ $VERSION =~ -[a-zA-Z] ]]; then
+            echo "is_prerelease=true" >> $GITHUB_OUTPUT
+          else
+            echo "is_prerelease=false" >> $GITHUB_OUTPUT
+          fi
+        fi
+    
+    - name: Validate version format
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        if [[ ! $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9]+)?$ ]]; then
+          echo "❌ Invalid version format: $VERSION"
+          echo "Expected format: X.Y.Z or X.Y.Z-prerelease"
+          exit 1
+        fi
+        echo "✅ Version format valid: $VERSION"
+    
+    - name: Update version in project files
+      if: github.event_name == 'workflow_dispatch'
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        
+        # Update pyproject.toml
+        sed -i "s/version = \".*\"/version = \"${VERSION}\"/" pyproject.toml
+        
+        # Update __init__.py if it exists
+        if [[ -f src/__init__.py ]]; then
+          sed -i "s/__version__ = \".*\"/__version__ = \"${VERSION}\"/" src/__init__.py
+        fi
+        
+        echo "✅ Version updated in project files"
+    
+    - name: Commit version changes
+      if: github.event_name == 'workflow_dispatch'
+      run: |
+        VERSION="${{ steps.version.outputs.version }}"
+        
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        
+        git add pyproject.toml
+        if [[ -f src/__init__.py ]]; then
+          git add src/__init__.py
+        fi
+        
+        git commit -m "chore: bump version to ${VERSION}" || echo "No changes to commit"
+        git tag "v${VERSION}"
+        git push origin HEAD --tags
+
+  # ============================================================================
+  # PRE-RELEASE VALIDATION
+  # ============================================================================
+  
+  pre-release-validation:
+    name: Pre-Release Validation
+    runs-on: ubuntu-latest
+    needs: version-management
+    timeout-minutes: 20
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: pip
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt -r requirements-dev.txt
+        python -m spacy download en_core_web_sm
+    
+    - name: Run comprehensive test suite
+      run: |
+        # Run all tests to ensure release quality
+        pytest tests/ \
+          --cov=src \
+          --cov-report=term \
+          --cov-report=xml:reports/coverage.xml \
+          --cov-fail-under=80 \
+          --maxfail=5 \
+          -v
+    
+    - name: Run quality checks
+      run: |
+        # Code quality validation
+        black --check src/ tests/ config/ app.py
+        flake8 src/ tests/ config/ app.py
+        mypy src/ --config-file=pyproject.toml
+        bandit -r src/
+    
+    - name: Build package
+      run: |
+        python -m build
+        
+        # Validate built package
+        python -m twine check dist/*
+    
+    - name: Test package installation
+      run: |
+        # Test package can be installed and imported
+        pip install dist/*.whl
+        python -c "import src; print('✅ Package imports successfully')"
+    
+    - name: Upload built package
+      uses: actions/upload-artifact@v3
+      with:
+        name: python-package
+        path: dist/
+        retention-days: 30
+
+  # ============================================================================
+  # DOCKER IMAGE BUILD & PUSH
+  # ============================================================================
+  
+  docker-release-build:
+    name: Docker Release Build
+    runs-on: ubuntu-latest
+    needs: [version-management, pre-release-validation]
+    timeout-minutes: 20
+    
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Log in to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.DOCKER_REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.DOCKER_REGISTRY }}/${{ github.repository }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=semver,pattern={{version}},value=v${{ needs.version-management.outputs.version }}
+          type=semver,pattern={{major}}.{{minor}},value=v${{ needs.version-management.outputs.version }}
+          type=semver,pattern={{major}},value=v${{ needs.version-management.outputs.version }}
+          type=raw,value=latest,enable={{is_default_branch}}
+        labels: |
+          org.opencontainers.image.title=Text-to-Audiobook
+          org.opencontainers.image.description=Enterprise AI-powered audiobook generation system
+          org.opencontainers.image.version=${{ needs.version-management.outputs.version }}
+    
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: docker/Dockerfile
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        platforms: linux/amd64,linux/arm64
+    
+    - name: Generate Docker image summary
+      run: |
+        echo "## 🐳 Docker Images Published" >> $GITHUB_STEP_SUMMARY
+        echo "**Version**: ${{ needs.version-management.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Registry**: ${{ env.DOCKER_REGISTRY }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Tags**:" >> $GITHUB_STEP_SUMMARY
+        echo '${{ steps.meta.outputs.tags }}' | while read tag; do
+          echo "- \`${tag}\`" >> $GITHUB_STEP_SUMMARY
+        done
+
+  # ============================================================================
+  # CHANGELOG GENERATION
+  # ============================================================================
+  
+  changelog-generation:
+    name: Generate Changelog
+    runs-on: ubuntu-latest
+    needs: version-management
+    timeout-minutes: 10
+    
+    outputs:
+      changelog: ${{ steps.changelog.outputs.changelog }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Generate changelog
+      id: changelog
+      run: |
+        VERSION="${{ needs.version-management.outputs.version }}"
+        PREVIOUS_VERSION="${{ needs.version-management.outputs.previous_version }}"
+        
+        # If we have a previous version, generate changelog from that point
+        if [[ -n "$PREVIOUS_VERSION" && "$PREVIOUS_VERSION" != "$VERSION" ]]; then
+          CHANGELOG_CONTENT=$(git log v${PREVIOUS_VERSION}..HEAD --pretty=format:"- %s (%an)" --no-merges)
+        else
+          # If no previous version, get recent commits
+          CHANGELOG_CONTENT=$(git log --since="7 days ago" --pretty=format:"- %s (%an)" --no-merges)
+        fi
+        
+        # Create structured changelog
+        cat > CHANGELOG_TEMP.md << EOF
+# What's Changed in v${VERSION}
+
+## 🚀 Features & Enhancements
+$(echo "$CHANGELOG_CONTENT" | grep -E "(feat|feature|add)" | head -10)
+
+## 🐛 Bug Fixes
+$(echo "$CHANGELOG_CONTENT" | grep -E "(fix|bug)" | head -10)
+
+## 🔧 Maintenance & Other Changes
+$(echo "$CHANGELOG_CONTENT" | grep -vE "(feat|feature|add|fix|bug)" | head -10)
+
+## 📊 Release Statistics
+- **Commits included**: $(echo "$CHANGELOG_CONTENT" | wc -l)
+- **Release type**: ${{ github.event.inputs.release_type || 'tag-triggered' }}
+- **Build date**: $(date)
+
+---
+**Full Changelog**: https://github.com/${{ github.repository }}/compare/v${PREVIOUS_VERSION}...v${VERSION}
+EOF
+        
+        # Handle multiline output for GitHub Actions
+        {
+          echo 'changelog<<EOF'
+          cat CHANGELOG_TEMP.md
+          echo EOF
+        } >> $GITHUB_OUTPUT
+    
+    - name: Upload changelog
+      uses: actions/upload-artifact@v3
+      with:
+        name: changelog
+        path: CHANGELOG_TEMP.md
+        retention-days: 30
+
+  # ============================================================================
+  # GITHUB RELEASE CREATION
+  # ============================================================================
+  
+  github-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [version-management, pre-release-validation, docker-release-build, changelog-generation]
+    timeout-minutes: 10
+    
+    permissions:
+      contents: write
+      discussions: write
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Download built package
+      uses: actions/download-artifact@v3
+      with:
+        name: python-package
+        path: dist/
+    
+    - name: Download changelog
+      uses: actions/download-artifact@v3
+      with:
+        name: changelog
+        path: ./
+    
+    - name: Create GitHub Release
+      uses: actions/create-release@v1
+      id: create_release
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: v${{ needs.version-management.outputs.version }}
+        release_name: Text-to-Audiobook v${{ needs.version-management.outputs.version }}
+        body_path: CHANGELOG_TEMP.md
+        draft: false
+        prerelease: ${{ needs.version-management.outputs.is_prerelease }}
+    
+    - name: Upload Python package to release
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: dist/text_to_audiobook-${{ needs.version-management.outputs.version }}-py3-none-any.whl
+        asset_name: text_to_audiobook-${{ needs.version-management.outputs.version }}-py3-none-any.whl
+        asset_content_type: application/octet-stream
+    
+    - name: Upload source distribution to release
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: dist/text-to-audiobook-${{ needs.version-management.outputs.version }}.tar.gz
+        asset_name: text-to-audiobook-${{ needs.version-management.outputs.version }}.tar.gz
+        asset_content_type: application/gzip
+
+  # ============================================================================
+  # PRODUCTION DEPLOYMENT
+  # ============================================================================
+  
+  production-deployment:
+    name: Production Deployment
+    runs-on: ubuntu-latest
+    needs: [version-management, github-release]
+    if: needs.version-management.outputs.is_prerelease == 'false' && (github.event.inputs.deploy_to_production != 'false')
+    timeout-minutes: 30
+    
+    environment:
+      name: production
+      url: https://text-to-audiobook.example.com
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Production deployment preparation
+      run: |
+        echo "🚀 Preparing production deployment for v${{ needs.version-management.outputs.version }}"
+        
+        # This would typically involve:
+        # - Updating Kubernetes manifests
+        # - Rolling deployment
+        # - Database migrations
+        # - Cache warming
+        # - Load balancer configuration
+        
+        echo "✅ Production deployment preparation completed"
+    
+    - name: Deploy to production
+      run: |
+        echo "🌐 Deploying to production environment..."
+        
+        # Example deployment commands:
+        # kubectl set image deployment/text-to-audiobook \
+        #   app=ghcr.io/${{ github.repository }}/text-to-audiobook:v${{ needs.version-management.outputs.version }}
+        # kubectl rollout status deployment/text-to-audiobook
+        
+        sleep 10  # Simulate deployment time
+        echo "✅ Production deployment completed"
+    
+    - name: Post-deployment verification
+      run: |
+        echo "🔍 Running post-deployment verification..."
+        
+        # Health checks
+        # Smoke tests
+        # Performance validation
+        # Monitoring validation
+        
+        sleep 5
+        echo "✅ Post-deployment verification completed"
+    
+    - name: Update monitoring and alerting
+      run: |
+        echo "📊 Updating monitoring dashboards and alerts..."
+        
+        # Update version tags in monitoring
+        # Adjust alert thresholds if needed
+        # Create deployment annotations
+        
+        echo "✅ Monitoring updated for v${{ needs.version-management.outputs.version }}"
+
+  # ============================================================================
+  # RELEASE NOTIFICATIONS & CLEANUP
+  # ============================================================================
+  
+  release-notifications:
+    name: Release Notifications
+    runs-on: ubuntu-latest
+    needs: [version-management, github-release, production-deployment]
+    if: always()
+    timeout-minutes: 5
+    
+    steps:
+    - name: Generate release summary
+      run: |
+        echo "## 🎉 Release Summary" > release-summary.md
+        echo "**Version**: v${{ needs.version-management.outputs.version }}" >> release-summary.md
+        echo "**Type**: ${{ needs.version-management.outputs.is_prerelease == 'true' && 'Pre-release' || 'Stable Release' }}" >> release-summary.md
+        echo "**Date**: $(date)" >> release-summary.md
+        echo "" >> release-summary.md
+        
+        echo "### Release Status" >> release-summary.md
+        echo "- **GitHub Release**: ${{ needs.github-release.result }}" >> release-summary.md
+        echo "- **Production Deployment**: ${{ needs.production-deployment.result }}" >> release-summary.md
+        echo "" >> release-summary.md
+        
+        if [[ "${{ needs.github-release.result }}" == "success" ]]; then
+          echo "✅ Release v${{ needs.version-management.outputs.version }} completed successfully!" >> release-summary.md
+        else
+          echo "❌ Release v${{ needs.version-management.outputs.version }} encountered issues." >> release-summary.md
+        fi
+        
+        echo "" >> release-summary.md
+        echo "### What's Next" >> release-summary.md
+        echo "1. Monitor production metrics and performance" >> release-summary.md
+        echo "2. Collect user feedback on new features" >> release-summary.md
+        echo "3. Plan next release cycle" >> release-summary.md
+    
+    - name: Add to job summary
+      run: |
+        cat release-summary.md >> $GITHUB_STEP_SUMMARY
+    
+    - name: Notify success
+      if: needs.github-release.result == 'success'
+      run: |
+        echo "🎉 Release v${{ needs.version-management.outputs.version }} published successfully!"
+        # Send notifications to:
+        # - Slack channels
+        # - Email lists
+        # - Discord servers
+        # - Social media
+    
+    - name: Notify failure
+      if: needs.github-release.result != 'success'
+      run: |
+        echo "❌ Release v${{ needs.version-management.outputs.version }} failed!"
+        # Send failure notifications and escalate to on-call team

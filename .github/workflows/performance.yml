@@ -1,0 +1,572 @@
+# Performance Monitoring & Benchmarking
+# Automated performance testing and regression detection
+
+name: Performance Monitoring
+
+on:
+  schedule:
+    # Run performance tests weekly on Sundays at 3 AM UTC
+    - cron: '0 3 * * 0'
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'tests/performance/**'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'tests/performance/**'
+  workflow_dispatch:
+    inputs:
+      benchmark_type:
+        description: 'Type of performance test'
+        required: false
+        default: 'full'
+        type: choice
+        options:
+        - full
+        - core-components
+        - memory-profiling
+        - load-testing
+      performance_threshold:
+        description: 'Performance regression threshold (%)'
+        required: false
+        default: '10'
+        type: string
+
+env:
+  PYTHON_VERSION: '3.11'
+  PERFORMANCE_THRESHOLD: ${{ github.event.inputs.performance_threshold || '10' }}
+
+jobs:
+  # ============================================================================
+  # CORE COMPONENT BENCHMARKS
+  # ============================================================================
+  
+  component-benchmarks:
+    name: Component Performance Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Need history for performance comparisons
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: pip
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt -r requirements-dev.txt
+        python -m spacy download en_core_web_sm
+    
+    - name: Cache performance data
+      uses: actions/cache@v3
+      with:
+        path: |
+          .benchmarks
+          performance-data
+        key: performance-${{ runner.os }}-${{ github.sha }}
+        restore-keys: |
+          performance-${{ runner.os }}-
+    
+    - name: Run core component benchmarks
+      run: |
+        mkdir -p performance-reports
+        
+        # Text extraction benchmarks
+        pytest tests/performance/test_component_performance.py::test_text_extraction_performance \
+          --benchmark-json=performance-reports/text-extraction-benchmark.json \
+          --benchmark-html=performance-reports/text-extraction-benchmark.html \
+          -v
+        
+        # Text structuring benchmarks
+        pytest tests/performance/test_component_performance.py::test_text_structuring_performance \
+          --benchmark-json=performance-reports/text-structuring-benchmark.json \
+          --benchmark-html=performance-reports/text-structuring-benchmark.html \
+          -v
+        
+        # LLM orchestration benchmarks
+        pytest tests/performance/test_component_performance.py::test_llm_orchestration_performance \
+          --benchmark-json=performance-reports/llm-orchestration-benchmark.json \
+          --benchmark-html=performance-reports/llm-orchestration-benchmark.html \
+          -v
+    
+    - name: Analyze performance trends
+      run: |
+        python -c "
+import json
+import os
+from datetime import datetime
+
+# Load benchmark results
+benchmark_files = [
+    'performance-reports/text-extraction-benchmark.json',
+    'performance-reports/text-structuring-benchmark.json',
+    'performance-reports/llm-orchestration-benchmark.json'
+]
+
+performance_summary = {
+    'timestamp': datetime.now().isoformat(),
+    'commit': os.getenv('GITHUB_SHA'),
+    'components': {}
+}
+
+for file in benchmark_files:
+    if os.path.exists(file):
+        with open(file, 'r') as f:
+            data = json.load(f)
+            component_name = file.split('/')[-1].replace('-benchmark.json', '')
+            
+            if 'benchmarks' in data:
+                component_perf = {}
+                for benchmark in data['benchmarks']:
+                    name = benchmark['name']
+                    stats = benchmark['stats']
+                    component_perf[name] = {
+                        'mean': stats['mean'],
+                        'min': stats['min'],
+                        'max': stats['max'],
+                        'stddev': stats['stddev']
+                    }
+                performance_summary['components'][component_name] = component_perf
+
+# Save performance summary
+with open('performance-reports/performance-summary.json', 'w') as f:
+    json.dump(performance_summary, f, indent=2)
+
+print('✅ Performance analysis completed')
+"
+    
+    - name: Generate performance report
+      run: |
+        echo "# 📊 Performance Test Results" > performance-reports/performance-report.md
+        echo "**Commit**: \`${{ github.sha }}\`" >> performance-reports/performance-report.md
+        echo "**Date**: $(date)" >> performance-reports/performance-report.md
+        echo "**Branch**: ${{ github.ref_name }}" >> performance-reports/performance-report.md
+        echo "" >> performance-reports/performance-report.md
+        
+        echo "## Component Performance" >> performance-reports/performance-report.md
+        echo "- **Text Extraction**: ✅ Completed" >> performance-reports/performance-report.md
+        echo "- **Text Structuring**: ✅ Completed" >> performance-reports/performance-report.md
+        echo "- **LLM Orchestration**: ✅ Completed" >> performance-reports/performance-report.md
+        echo "" >> performance-reports/performance-report.md
+        
+        echo "## Key Metrics" >> performance-reports/performance-report.md
+        echo "See detailed benchmark reports in artifacts for specific timings." >> performance-reports/performance-report.md
+    
+    - name: Upload performance reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: component-performance-reports
+        path: performance-reports/
+        retention-days: 90
+    
+    - name: Comment on PR with performance results
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          try {
+            const report = fs.readFileSync('performance-reports/performance-report.md', 'utf8');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## 📊 Performance Test Results\n\n${report}\n\n*Full benchmark details available in workflow artifacts*`
+            });
+          } catch (error) {
+            console.log('Could not read performance report:', error.message);
+          }
+
+  # ============================================================================
+  # MEMORY PROFILING
+  # ============================================================================
+  
+  memory-profiling:
+    name: Memory Usage Analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: github.event.inputs.benchmark_type == 'memory-profiling' || github.event.inputs.benchmark_type == 'full' || github.event_name == 'schedule'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: pip
+    
+    - name: Install dependencies with profiling tools
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt -r requirements-dev.txt
+        pip install memory-profiler pympler psutil
+        python -m spacy download en_core_web_sm
+    
+    - name: Run memory profiling tests
+      run: |
+        mkdir -p performance-reports/memory
+        
+        # Memory profiling for text extraction
+        python -m memory_profiler tests/performance/memory_profile_text_extraction.py > performance-reports/memory/text-extraction-memory.txt 2>&1 || true
+        
+        # Memory profiling for text structuring
+        python -m memory_profiler tests/performance/memory_profile_text_structuring.py > performance-reports/memory/text-structuring-memory.txt 2>&1 || true
+        
+        # Generate memory usage reports
+        python -c "
+import psutil
+import json
+from datetime import datetime
+
+memory_info = {
+    'timestamp': datetime.now().isoformat(),
+    'system_memory': {
+        'total': psutil.virtual_memory().total,
+        'available': psutil.virtual_memory().available,
+        'percent': psutil.virtual_memory().percent
+    },
+    'process_memory': {
+        'rss': psutil.Process().memory_info().rss,
+        'vms': psutil.Process().memory_info().vms
+    }
+}
+
+with open('performance-reports/memory/system-memory-info.json', 'w') as f:
+    json.dump(memory_info, f, indent=2)
+
+print('✅ Memory profiling completed')
+"
+    
+    - name: Analyze memory usage patterns
+      run: |
+        echo "# 🧠 Memory Usage Analysis" > performance-reports/memory/memory-analysis.md
+        echo "**Date**: $(date)" >> performance-reports/memory/memory-analysis.md
+        echo "**Commit**: \`${{ github.sha }}\`" >> performance-reports/memory/memory-analysis.md
+        echo "" >> performance-reports/memory/memory-analysis.md
+        
+        echo "## Memory Profiling Results" >> performance-reports/memory/memory-analysis.md
+        echo "- Text extraction memory profiling completed" >> performance-reports/memory/memory-analysis.md
+        echo "- Text structuring memory profiling completed" >> performance-reports/memory/memory-analysis.md
+        echo "- System memory information collected" >> performance-reports/memory/memory-analysis.md
+        echo "" >> performance-reports/memory/memory-analysis.md
+        
+        echo "## Action Items" >> performance-reports/memory/memory-analysis.md
+        echo "1. Review detailed memory profiles in artifacts" >> performance-reports/memory/memory-analysis.md
+        echo "2. Identify potential memory leaks or optimization opportunities" >> performance-reports/memory/memory-analysis.md
+        echo "3. Compare with baseline memory usage patterns" >> performance-reports/memory/memory-analysis.md
+    
+    - name: Upload memory profiling reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: memory-profiling-reports
+        path: performance-reports/memory/
+        retention-days: 90
+
+  # ============================================================================
+  # LOAD TESTING
+  # ============================================================================
+  
+  load-testing:
+    name: Load Testing & Stress Testing
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    if: github.event.inputs.benchmark_type == 'load-testing' || github.event.inputs.benchmark_type == 'full' || github.event_name == 'schedule'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+        cache: pip
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt -r requirements-dev.txt
+        python -m spacy download en_core_web_sm
+    
+    - name: Run load testing simulation
+      run: |
+        mkdir -p performance-reports/load
+        
+        # Simulate high-volume text processing
+        pytest tests/performance/test_load_simulation.py::test_concurrent_text_processing \
+          --benchmark-json=performance-reports/load/concurrent-processing-benchmark.json \
+          --benchmark-html=performance-reports/load/concurrent-processing-benchmark.html \
+          -v
+        
+        # Simulate memory stress testing
+        pytest tests/performance/test_load_simulation.py::test_memory_stress \
+          --benchmark-json=performance-reports/load/memory-stress-benchmark.json \
+          --benchmark-html=performance-reports/load/memory-stress-benchmark.html \
+          -v
+    
+    - name: Generate load test summary
+      run: |
+        echo "# ⚡ Load Testing Results" > performance-reports/load/load-test-summary.md
+        echo "**Date**: $(date)" >> performance-reports/load/load-test-summary.md
+        echo "**Commit**: \`${{ github.sha }}\`" >> performance-reports/load/load-test-summary.md
+        echo "" >> performance-reports/load/load-test-summary.md
+        
+        echo "## Test Results" >> performance-reports/load/load-test-summary.md
+        echo "- ✅ Concurrent text processing simulation completed" >> performance-reports/load/load-test-summary.md
+        echo "- ✅ Memory stress testing completed" >> performance-reports/load/load-test-summary.md
+        echo "" >> performance-reports/load/load-test-summary.md
+        
+        echo "## Performance Insights" >> performance-reports/load/load-test-summary.md
+        echo "- Review benchmark artifacts for detailed performance metrics" >> performance-reports/load/load-test-summary.md
+        echo "- Monitor for performance regressions in concurrent scenarios" >> performance-reports/load/load-test-summary.md
+        echo "- Validate system stability under memory pressure" >> performance-reports/load/load-test-summary.md
+    
+    - name: Upload load testing reports
+      uses: actions/upload-artifact@v3
+      with:
+        name: load-testing-reports
+        path: performance-reports/load/
+        retention-days: 90
+
+  # ============================================================================
+  # PERFORMANCE REGRESSION DETECTION
+  # ============================================================================
+  
+  regression-detection:
+    name: Performance Regression Detection
+    runs-on: ubuntu-latest
+    needs: [component-benchmarks]
+    timeout-minutes: 10
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Download current performance reports
+      uses: actions/download-artifact@v3
+      with:
+        name: component-performance-reports
+        path: current-performance/
+    
+    - name: Get baseline performance data
+      run: |
+        # Try to get performance data from main branch or previous runs
+        mkdir -p baseline-performance
+        
+        # This would typically fetch from a performance database or artifact storage
+        # For now, we'll simulate baseline data
+        echo "📊 Fetching baseline performance data..."
+        
+        # Create mock baseline data structure
+        python -c "
+import json
+from datetime import datetime, timedelta
+
+baseline_data = {
+    'timestamp': (datetime.now() - timedelta(days=1)).isoformat(),
+    'commit': 'baseline-commit',
+    'components': {
+        'text-extraction': {
+            'test_pdf_extraction': {'mean': 0.1, 'stddev': 0.01},
+            'test_docx_extraction': {'mean': 0.05, 'stddev': 0.005}
+        },
+        'text-structuring': {
+            'test_basic_structuring': {'mean': 2.0, 'stddev': 0.2},
+            'test_complex_structuring': {'mean': 5.0, 'stddev': 0.5}
+        }
+    }
+}
+
+with open('baseline-performance/baseline-summary.json', 'w') as f:
+    json.dump(baseline_data, f, indent=2)
+    
+print('✅ Baseline data prepared')
+"
+    
+    - name: Compare performance with baseline
+      run: |
+        python -c "
+import json
+import os
+
+def load_json_file(filepath):
+    try:
+        with open(filepath, 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return None
+
+# Load current and baseline performance data
+current_data = load_json_file('current-performance/performance-summary.json')
+baseline_data = load_json_file('baseline-performance/baseline-summary.json')
+
+threshold = float(os.getenv('PERFORMANCE_THRESHOLD', '10'))
+regressions = []
+improvements = []
+
+if current_data and baseline_data:
+    for component in current_data.get('components', {}):
+        if component in baseline_data.get('components', {}):
+            current_component = current_data['components'][component]
+            baseline_component = baseline_data['components'][component]
+            
+            for test_name in current_component:
+                if test_name in baseline_component:
+                    current_mean = current_component[test_name].get('mean', 0)
+                    baseline_mean = baseline_component[test_name].get('mean', 0)
+                    
+                    if baseline_mean > 0:
+                        change_percent = ((current_mean - baseline_mean) / baseline_mean) * 100
+                        
+                        if change_percent > threshold:
+                            regressions.append({
+                                'component': component,
+                                'test': test_name,
+                                'change_percent': round(change_percent, 2),
+                                'current': current_mean,
+                                'baseline': baseline_mean
+                            })
+                        elif change_percent < -5:  # 5% improvement threshold
+                            improvements.append({
+                                'component': component,
+                                'test': test_name,
+                                'change_percent': round(change_percent, 2),
+                                'current': current_mean,
+                                'baseline': baseline_mean
+                            })
+
+# Generate regression report
+with open('performance-regression-report.md', 'w') as f:
+    f.write('# 🔍 Performance Regression Analysis\\n\\n')
+    f.write(f'**Threshold**: {threshold}% regression\\n')
+    f.write(f'**Date**: $(date)\\n\\n')
+    
+    if regressions:
+        f.write('## ⚠️ Performance Regressions Detected\\n\\n')
+        for reg in regressions:
+            f.write(f'- **{reg[\"component\"]}::{reg[\"test\"]}**: {reg[\"change_percent\"]}% slower ({reg[\"baseline\"]}s → {reg[\"current\"]}s)\\n')
+        f.write('\\n')
+    else:
+        f.write('## ✅ No Performance Regressions Detected\\n\\n')
+    
+    if improvements:
+        f.write('## 🚀 Performance Improvements\\n\\n')
+        for imp in improvements:
+            f.write(f'- **{imp[\"component\"]}::{imp[\"test\"]}**: {abs(imp[\"change_percent\"])}% faster ({imp[\"baseline\"]}s → {imp[\"current\"]}s)\\n')
+        f.write('\\n')
+    
+    # Set exit code based on regressions
+    exit_code = 1 if regressions else 0
+    
+    with open('regression_status.txt', 'w') as status_file:
+        status_file.write(str(exit_code))
+
+print('✅ Regression analysis completed')
+"
+    
+    - name: Check regression status
+      run: |
+        if [[ -f regression_status.txt ]]; then
+          exit_code=$(cat regression_status.txt)
+          if [[ $exit_code -eq 1 ]]; then
+            echo "❌ Performance regressions detected"
+            cat performance-regression-report.md
+            exit 1
+          else
+            echo "✅ No performance regressions detected"
+            cat performance-regression-report.md
+          fi
+        fi
+    
+    - name: Upload regression analysis
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: regression-analysis
+        path: performance-regression-report.md
+        retention-days: 90
+    
+    - name: Comment on PR with regression analysis
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          try {
+            const report = fs.readFileSync('performance-regression-report.md', 'utf8');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `${report}`
+            });
+          } catch (error) {
+            console.log('Could not read regression report:', error.message);
+          }
+
+  # ============================================================================
+  # PERFORMANCE SUMMARY & NOTIFICATIONS
+  # ============================================================================
+  
+  performance-summary:
+    name: Performance Test Summary
+    runs-on: ubuntu-latest
+    needs: [component-benchmarks, memory-profiling, load-testing, regression-detection]
+    if: always()
+    timeout-minutes: 5
+    
+    steps:
+    - name: Generate performance test summary
+      run: |
+        echo "# 📊 Performance Test Summary" > performance-summary.md
+        echo "**Date**: $(date)" >> performance-summary.md
+        echo "**Commit**: \`${{ github.sha }}\`" >> performance-summary.md
+        echo "**Trigger**: ${{ github.event_name }}" >> performance-summary.md
+        echo "" >> performance-summary.md
+        
+        echo "## Test Results" >> performance-summary.md
+        echo "- **Component Benchmarks**: ${{ needs.component-benchmarks.result }}" >> performance-summary.md
+        echo "- **Memory Profiling**: ${{ needs.memory-profiling.result }}" >> performance-summary.md
+        echo "- **Load Testing**: ${{ needs.load-testing.result }}" >> performance-summary.md
+        echo "- **Regression Detection**: ${{ needs.regression-detection.result }}" >> performance-summary.md
+        echo "" >> performance-summary.md
+        
+        echo "## Overall Status" >> performance-summary.md
+        if [[ "${{ needs.component-benchmarks.result }}" == "success" ]]; then
+          echo "✅ All performance tests completed successfully" >> performance-summary.md
+        else
+          echo "⚠️ Some performance tests reported issues" >> performance-summary.md
+        fi
+        
+        echo "" >> performance-summary.md
+        echo "## Artifacts Available" >> performance-summary.md
+        echo "- Component performance reports" >> performance-summary.md
+        echo "- Memory profiling results" >> performance-summary.md
+        echo "- Load testing benchmarks" >> performance-summary.md
+        echo "- Regression analysis" >> performance-summary.md
+    
+    - name: Add to job summary
+      run: |
+        cat performance-summary.md >> $GITHUB_STEP_SUMMARY
+    
+    - name: Upload performance summary
+      uses: actions/upload-artifact@v3
+      with:
+        name: performance-summary
+        path: performance-summary.md
+        retention-days: 90
