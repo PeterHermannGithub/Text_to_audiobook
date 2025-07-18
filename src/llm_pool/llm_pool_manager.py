@@ -23,6 +23,7 @@ from queue import Queue, Empty
 import json
 
 from config import settings
+from .http_pool_manager import HTTPConnectionPoolManager, ConnectionPoolConfig
 
 
 class LLMInstanceStatus(Enum):
@@ -119,6 +120,15 @@ class LLMPoolManager:
         self.metrics_collector = LLMMetricsCollector(self)
         self.logger = logging.getLogger(__name__)
         
+        # HTTP connection pool manager for optimized requests
+        if settings.HTTP_POOL_ENABLED:
+            self.http_pool_config = ConnectionPoolConfig.from_settings()
+            self.http_pool_manager = HTTPConnectionPoolManager(self.http_pool_config)
+            self.logger.info("HTTP connection pooling enabled for LLM requests")
+        else:
+            self.http_pool_manager = None
+            self.logger.info("HTTP connection pooling disabled")
+        
         # Thread pool for handling requests
         self.executor = ThreadPoolExecutor(
             max_workers=self.config['max_concurrent_requests']
@@ -211,6 +221,11 @@ class LLMPoolManager:
         # Stop health monitor
         if self.health_monitor_thread:
             self.health_monitor_thread.join(timeout=5.0)
+        
+        # Clean up HTTP connection pool manager
+        if self.http_pool_manager:
+            self.http_pool_manager.close()
+            self.logger.info("HTTP connection pool closed")
         
         self.logger.info("LLM pool manager stopped")
     
@@ -338,7 +353,7 @@ class LLMPoolManager:
             instance.current_load -= 1
     
     def _make_llm_request(self, instance: LLMInstance, request: LLMRequest) -> str:
-        """Make actual HTTP request to LLM instance."""
+        """Make actual HTTP request to LLM instance with connection pooling."""
         url = f"{instance.url}/api/generate"
         
         payload = {
@@ -348,29 +363,41 @@ class LLMPoolManager:
             **request.model_config
         }
         
-        # Create session with retry strategy
-        session = requests.Session()
-        retry_strategy = Retry(
-            total=3,
-            backoff_factor=0.1,
-            status_forcelist=[500, 502, 503, 504]
-        )
-        session.mount("http://", HTTPAdapter(max_retries=retry_strategy))
-        session.mount("https://", HTTPAdapter(max_retries=retry_strategy))
-        
         try:
-            response = session.post(
-                url,
-                json=payload,
-                timeout=request.timeout
-            )
-            response.raise_for_status()
+            # Use HTTP connection pool manager if available
+            if self.http_pool_manager:
+                response = self.http_pool_manager.post(
+                    url,
+                    json_data=payload,
+                    timeout=request.timeout,
+                    request_complexity='complex'  # LLM generation is complex
+                )
+            else:
+                # Fallback to legacy session creation
+                session = requests.Session()
+                retry_strategy = Retry(
+                    total=3,
+                    backoff_factor=0.1,
+                    status_forcelist=[500, 502, 503, 504]
+                )
+                session.mount("http://", HTTPAdapter(max_retries=retry_strategy))
+                session.mount("https://", HTTPAdapter(max_retries=retry_strategy))
+                
+                response = session.post(
+                    url,
+                    json=payload,
+                    timeout=request.timeout
+                )
+                response.raise_for_status()
             
             result = response.json()
             return result.get("response", "")
             
         except requests.exceptions.RequestException as e:
             raise Exception(f"HTTP request failed: {e}")
+        except ConnectionError as e:
+            # Circuit breaker is open
+            raise Exception(f"Circuit breaker open: {e}")
     
     def get_pool_status(self) -> Dict[str, Any]:
         """Get current pool status."""
@@ -378,7 +405,7 @@ class LLMPoolManager:
                                if i.status == LLMInstanceStatus.HEALTHY)
         total_load = sum(i.current_load for i in self.instances.values())
         
-        return {
+        status = {
             'total_instances': len(self.instances),
             'healthy_instances': healthy_instances,
             'total_load': total_load,
@@ -400,6 +427,12 @@ class LLMPoolManager:
                 for i in self.instances.values()
             ]
         }
+        
+        # Add HTTP connection pool statistics
+        if self.http_pool_manager:
+            status['http_pool_stats'] = self.http_pool_manager.get_stats()
+        
+        return status
     
     def add_instance(self, host: str, port: int, model_name: str) -> str:
         """Add a new LLM instance to the pool."""
@@ -492,7 +525,17 @@ class LLMHealthMonitor:
         try:
             # Make a simple health check request
             url = f"{instance.url}/api/version"
-            response = requests.get(url, timeout=5.0)
+            
+            # Use HTTP connection pool manager if available
+            if self.pool_manager.http_pool_manager:
+                response = self.pool_manager.http_pool_manager.get(
+                    url, 
+                    timeout=5.0,
+                    request_complexity='simple'  # Health checks are simple
+                )
+            else:
+                # Fallback to direct requests
+                response = requests.get(url, timeout=5.0)
             
             if response.status_code == 200:
                 instance.status = LLMInstanceStatus.HEALTHY
