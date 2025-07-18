@@ -109,15 +109,17 @@ class TextExtractor:
         return self.supported_formats[ext](file_path)
 
     def _read_txt(self, file_path: str) -> str:
-        """Reads text from a .txt or .md file with Project Gutenberg filtering."""
+        """Reads text from a .txt or .md file with enhanced format detection and filtering."""
         with open(file_path, 'r', encoding='utf-8') as f:
             raw_text = f.read()
         
-        # Check if this is a Project Gutenberg text file
+        # Check format type and apply appropriate filtering
         if self._is_project_gutenberg_text(raw_text):
             return self._filter_project_gutenberg_content(raw_text)
+        elif self._is_web_novel_text(raw_text):
+            return self._filter_web_novel_content(raw_text)
         else:
-            # For non-PG texts, return as-is but still apply basic filtering
+            # For other texts, return as-is but still apply basic filtering
             return self._apply_basic_text_filtering(raw_text)
 
     def _read_pdf(self, file_path: str) -> str:
@@ -134,8 +136,14 @@ class TextExtractor:
                 'content_type': self._classify_page_content(page_text)
             })
         
-        # Filter and process content
-        filtered_text = self._filter_pdf_content(all_pages_text)
+        # Check if this appears to be a web novel PDF and apply appropriate filtering
+        all_text = '\n'.join(page['text'] for page in all_pages_text)
+        if self._is_web_novel_text(all_text):
+            # For web novel PDFs, apply specialized filtering
+            filtered_text = self._filter_web_novel_pdf_content(all_pages_text)
+        else:
+            # Standard PDF filtering
+            filtered_text = self._filter_pdf_content(all_pages_text)
         return filtered_text
 
     def _read_docx(self, file_path: str) -> str:
@@ -175,7 +183,7 @@ class TextExtractor:
             page_text: Text content of the page
             
         Returns:
-            Content type ('toc', 'chapter_header', 'metadata', 'story', 'mixed', 'preface', 'pg_metadata')
+            Content type ('toc', 'chapter_header', 'metadata', 'story', 'mixed', 'preface', 'pg_metadata', 'web_metadata', 'author_notes', 'platform_ui', 'chapter_nav')
         """
         if not page_text.strip():
             return 'empty'
@@ -195,6 +203,60 @@ class TextExtractor:
         
         if any(indicator in text_lower for indicator in pg_metadata_indicators):
             return 'pg_metadata'
+        
+        # Priority 1.5: Web novel metadata detection
+        web_metadata_indicators = [
+            # Platform metadata patterns
+            '[complete]', '] author:', 'chapters.', 'hits=', 'views:', 'bookmarks:',
+            'web novel', 'light novel', 'tls123', 'ways of survival',
+            # Translation indicators
+            'translator note', 'tl note', 't/n:', 'translated by',
+            # Platform UI elements
+            'next chapter', 'previous chapter', 'bookmark this', 'add to library'
+        ]
+        
+        # Enhanced web novel chapter navigation detection (same patterns as _classify_web_novel_content)
+        chapter_nav_patterns = [
+            r'chapter\s+\d+:\s+epilogue\s+\d+\s*(?:–|-)\s*.*\s+\d+\.',  # "Chapter 518: Epilogue 1 – The World of Zero, II 519."
+            r'chapter\s+\d+:\s+.*\s+\d+\.',  # "Chapter 520: Something IV 521."
+            r'chapter\s+\d+\s*(?:–|-)\s*.*,?\s*[ivx]+\s+\d+',  # Chapter navigation with Roman numerals
+            r'epilogue\s+\d+\s*(?:–|-)\s*.*,?\s*[ivx]+\s+\d+',  # Epilogue navigation
+            r'chapter\s+\d+.*epilogue.*\d+\.',  # Any chapter + epilogue + number pattern
+            r'^\d+\.\s*$',  # Standalone numbers (page/chapter numbers)
+        ]
+        
+        # Check for chapter navigation patterns first
+        for pattern in chapter_nav_patterns:
+            if re.search(pattern, text_lower):
+                return 'chapter_nav'
+        
+        # Check for web novel table of contents (inline detection)
+        lines = [line.strip() for line in text.split('\n') if line.strip()]
+        if len(lines) >= 2:
+            chapter_line_count = 0
+            for line in lines:
+                line_lower = line.lower()
+                # Count lines that look like chapter entries
+                if any(re.search(pattern, line_lower) for pattern in [
+                    r'chapter\s+\d+', r'epilogue\s+\d+', r'prologue', 
+                    r'\d+\.\s*chapter', r'chapter\s+\d+\s*(?:–|-|:)'
+                ]):
+                    chapter_line_count += 1
+            
+            # If more than 50% of lines look like chapter entries, it's likely TOC
+            if chapter_line_count / len(lines) > 0.5:
+                return 'chapter_nav'
+        
+        if any(indicator in text_lower for indicator in web_metadata_indicators):
+            # Further classify web novel content type
+            if any(indicator in text_lower for indicator in ['author note', 'thanks for reading', 'please rate']):
+                return 'author_notes'
+            elif any(indicator in text_lower for indicator in ['next chapter', 'previous chapter', 'bookmark']):
+                return 'chapter_nav'
+            elif any(indicator in text_lower for indicator in ['click here', 'read more', 'add to library']):
+                return 'platform_ui'
+            else:
+                return 'web_metadata'
         
         # Priority 2: Academic/Critical preface detection
         preface_indicators = [
@@ -339,6 +401,10 @@ class TextExtractor:
                 
             # Skip publication metadata (always filter out)
             if content_type == 'metadata':
+                continue
+            
+            # Skip web novel metadata and UI elements (always filter out)
+            if content_type in ['web_metadata', 'author_notes', 'platform_ui', 'chapter_nav']:
                 continue
             
             # Track consecutive TOC pages
@@ -703,6 +769,358 @@ class TextExtractor:
             
             # Skip very short lines that might be artifacts
             if len(line) < 3:
+                continue
+            
+            cleaned_lines.append(line)
+        
+        return '\n'.join(cleaned_lines)
+    
+    def _is_web_novel_text(self, text: str) -> bool:
+        """
+        Detect if the text is from a web novel platform (Korean light novel, translated web novel, etc.).
+        
+        Args:
+            text: Raw text content
+            
+        Returns:
+            True if this appears to be a web novel text
+        """
+        # Check for common web novel markers
+        web_novel_markers = [
+            # Platform markers
+            "Author:", "tls123", "ways of survival", "complete]",
+            # Korean light novel indicators
+            "kim dokja", "yoo sangah", "jung heewon", "lee hyunsung",
+            # Common web novel formatting
+            "chapter ", "prologue", "[complete]", "web novel",
+            # Translation indicators
+            "translator note", "tl note", "t/n:", "translated by",
+            # Platform metadata patterns
+            "] author:", "chapters.", "hits=", "views:", "bookmarks:",
+            # Common light novel phrases
+            "ruined world", "apocalypse", "system", "status window",
+            # First-person web novel indicators
+            "i have been", "i scrolled down", "i looked again",
+            # Korean name patterns (romanized)
+            "dok-", "sang-", "hee-", "hyun-"
+        ]
+        
+        # Check first 5000 characters for web novel markers (more than PG since metadata might be scattered)
+        text_sample = text[:5000].lower()
+        marker_count = sum(1 for marker in web_novel_markers if marker in text_sample)
+        
+        # Web novel detection threshold (need multiple indicators)
+        return marker_count >= 3
+    
+    def _filter_web_novel_content(self, text: str) -> str:
+        """
+        Filter web novel text to extract only story content, removing platform metadata and author notes.
+        
+        Args:
+            text: Raw web novel text
+            
+        Returns:
+            Filtered text containing only story content
+        """
+        lines = text.split('\n')
+        
+        # Find story boundaries for web novels
+        story_start_idx = self._find_web_novel_story_start(lines)
+        story_end_idx = self._find_web_novel_story_end(lines)
+        
+        # Extract story content
+        if story_start_idx is not None:
+            story_lines = lines[story_start_idx:story_end_idx] if story_end_idx else lines[story_start_idx:]
+        else:
+            # If we can't find clear boundaries, apply aggressive filtering
+            story_lines = lines
+        
+        # Apply web novel specific filtering
+        filtered_lines = self._remove_web_novel_artifacts(story_lines)
+        
+        return '\n'.join(filtered_lines)
+    
+    def _filter_web_novel_pdf_content(self, pages_data: List[PageData]) -> str:
+        """
+        Enhanced PDF content filtering for web novel content.
+        
+        Args:
+            pages_data: List of page dictionaries with content type classification
+            
+        Returns:
+            Filtered text content containing only story-relevant material
+        """
+        story_text = []
+        
+        for page_data in pages_data:
+            content_type = page_data['content_type']
+            page_text = page_data['text']
+            
+            # Enhanced classification for web novel content
+            web_novel_type = self._classify_web_novel_content(page_text)
+            
+            # Skip web novel metadata
+            if web_novel_type in ['web_metadata', 'author_notes', 'platform_ui', 'chapter_nav']:
+                continue
+            
+            # Include story content with web novel aware cleaning
+            if content_type in ['story', 'mixed'] or web_novel_type == 'story_content':
+                cleaned_text = self._clean_web_novel_text(page_text)
+                if cleaned_text:
+                    story_text.append(cleaned_text)
+        
+        return '\n\n'.join(story_text) if story_text else '\n'.join(page['text'] for page in pages_data)
+    
+    def _find_web_novel_story_start(self, lines: List[str]) -> Optional[int]:
+        """
+        Find where the actual web novel story content begins.
+        
+        Args:
+            lines: List of text lines
+            
+        Returns:
+            Index of story start, or None if not found
+        """
+        # Web novel story start patterns
+        story_start_patterns = [
+            # Chapter markers
+            r"^\s*chapter\s+\d+\s*[:.]?\s*",
+            r"^\s*prologue\s*[:.]?\s*",
+            r"^\s*epilogue\s*[:.]?\s*",
+            # Common opening lines for web novels
+            r"there are three ways to survive",
+            r"i have been reading",
+            r"the story was over",
+            # Narrative start indicators
+            r"^\s*[\"'].*[\"']\s*$",  # Starting with dialogue
+            r"^\s*[A-Z][a-z]+ was ",
+            r"^\s*I [a-z]+ ",  # First-person narrative start
+        ]
+        
+        # Skip obvious metadata at the beginning
+        for i, line in enumerate(lines[:200]):  # Search first 200 lines
+            line_stripped = line.strip()
+            
+            # Skip empty lines
+            if not line_stripped:
+                continue
+                
+            # Skip obvious metadata lines
+            if self._is_web_novel_metadata_line(line_stripped):
+                continue
+            
+            # Check for story start patterns
+            for pattern in story_start_patterns:
+                if re.match(pattern, line_stripped, re.IGNORECASE):
+                    return i
+            
+            # If line looks like story content (has narrative/dialogue characteristics)
+            if (len(line_stripped) > 30 and 
+                ('.' in line_stripped or '"' in line_stripped) and
+                not self._is_web_novel_metadata_line(line_stripped)):
+                return i
+        
+        return None
+    
+    def _find_web_novel_story_end(self, lines: List[str]) -> Optional[int]:
+        """
+        Find where the web novel story content ends.
+        
+        Args:
+            lines: List of text lines
+            
+        Returns:
+            Index of story end, or None if not found
+        """
+        # Look for common ending markers (search from end)
+        end_markers = [
+            "author's note", "translator's note", "next chapter",
+            "to be continued", "end of chapter", "comments:",
+            "thanks for reading", "please rate and review"
+        ]
+        
+        for i in range(len(lines) - 1, max(0, len(lines) - 100), -1):
+            line = lines[i].strip().lower()
+            if any(marker in line for marker in end_markers):
+                return i
+        
+        return None
+    
+    def _remove_web_novel_artifacts(self, lines: List[str]) -> List[str]:
+        """
+        Remove web novel platform artifacts and metadata.
+        
+        Args:
+            lines: List of text lines
+            
+        Returns:
+            Cleaned lines with artifacts removed
+        """
+        filtered_lines = []
+        
+        for line in lines:
+            line = line.strip()
+            
+            # Skip empty lines
+            if not line:
+                continue
+            
+            # Skip web novel metadata lines
+            if self._is_web_novel_metadata_line(line):
+                continue
+            
+            # Skip author notes and commentary
+            if self._is_author_note_line(line):
+                continue
+            
+            # Skip platform UI elements
+            if self._is_platform_ui_line(line):
+                continue
+            
+            filtered_lines.append(line)
+        
+        return filtered_lines
+    
+    def _is_web_novel_metadata_line(self, line: str) -> bool:
+        """Check if a line is web novel metadata that should be filtered."""
+        line_lower = line.lower()
+        
+        metadata_patterns = [
+            # Platform metadata
+            r"^\[.*\]\s*author:",
+            r"^\d+\s*chapters?\.",
+            r"hits\s*=\s*\d+",
+            r"views?:\s*\d+",
+            r"bookmarks?:\s*\d+",
+            # Chapter navigation
+            r"^chapter\s+\d+\s*$",
+            r"^next\s+chapter",
+            r"^previous\s+chapter",
+            # Platform markers
+            r"^complete\]",
+            r"web\s+novel",
+            r"translation\s+by"
+        ]
+        
+        return any(re.match(pattern, line_lower) for pattern in metadata_patterns)
+    
+    def _is_author_note_line(self, line: str) -> bool:
+        """Check if a line is an author note that should be filtered."""
+        line_lower = line.lower()
+        
+        author_note_indicators = [
+            "author's note", "author note", "a/n:", "tl note", "translator note",
+            "thanks for reading", "please rate", "please review", "comments:",
+            "feedback appreciated", "support the author"
+        ]
+        
+        return any(indicator in line_lower for indicator in author_note_indicators)
+    
+    def _is_platform_ui_line(self, line: str) -> bool:
+        """Check if a line is platform UI that should be filtered."""
+        line_lower = line.lower()
+        
+        ui_indicators = [
+            "click here", "read more", "continue reading", "next page",
+            "bookmark this", "add to library", "follow author",
+            "rate this novel", "write a review"
+        ]
+        
+        return any(indicator in line_lower for indicator in ui_indicators)
+    
+    def _classify_web_novel_content(self, text: str) -> str:
+        """
+        Classify web novel content type.
+        
+        Args:
+            text: Text content to classify
+            
+        Returns:
+            Content type ('story_content', 'web_metadata', 'author_notes', 'platform_ui', 'chapter_nav')
+        """
+        text_lower = text.lower()
+        
+        # Enhanced web novel chapter navigation detection
+        chapter_nav_patterns = [
+            r'chapter\s+\d+:\s+epilogue\s+\d+\s*(?:–|-)\s*.*\s+\d+\.',  # "Chapter 518: Epilogue 1 – The World of Zero, II 519."
+            r'chapter\s+\d+:\s+.*\s+\d+\.',  # "Chapter 520: Something IV 521."
+            r'chapter\s+\d+\s*(?:–|-)\s*.*,?\s*[ivx]+\s+\d+',  # Chapter navigation with Roman numerals
+            r'epilogue\s+\d+\s*(?:–|-)\s*.*,?\s*[ivx]+\s+\d+',  # Epilogue navigation
+            r'chapter\s+\d+.*epilogue.*\d+\.',  # Any chapter + epilogue + number pattern
+            r'^\d+\.\s*$',  # Standalone numbers (page/chapter numbers)
+        ]
+        
+        for pattern in chapter_nav_patterns:
+            if re.search(pattern, text_lower):
+                return 'chapter_nav'
+        
+        # Check for web novel specific content types
+        if any(marker in text_lower for marker in ['author:', 'complete]', 'chapters.', 'hits=']):
+            return 'web_metadata'
+        
+        if any(marker in text_lower for marker in ['author note', 'thanks for reading', 'please rate']):
+            return 'author_notes'
+        
+        if any(marker in text_lower for marker in ['next chapter', 'previous chapter', 'bookmark']):
+            return 'chapter_nav'
+        
+        if any(marker in text_lower for marker in ['click here', 'read more', 'add to library']):
+            return 'platform_ui'
+        
+        # Web novel table of contents detection
+        if self._is_web_novel_toc_content(text):
+            return 'chapter_nav'
+        
+        # Default to story content
+        return 'story_content'
+    
+    def _is_web_novel_toc_content(self, text: str) -> bool:
+        """
+        Detect if text appears to be a web novel table of contents or chapter navigation.
+        """
+        lines = [line.strip() for line in text.split('\n') if line.strip()]
+        
+        if len(lines) < 2:
+            return False
+        
+        chapter_line_count = 0
+        for line in lines:
+            line_lower = line.lower()
+            
+            # Count lines that look like chapter entries
+            chapter_patterns = [
+                r'chapter\s+\d+',
+                r'epilogue\s+\d+',
+                r'prologue',
+                r'\d+\.\s*chapter',
+                r'chapter\s+\d+\s*(?:–|-|:)',
+            ]
+            
+            if any(re.search(pattern, line_lower) for pattern in chapter_patterns):
+                chapter_line_count += 1
+        
+        # If more than 50% of lines look like chapter entries, it's likely TOC
+        return chapter_line_count / len(lines) > 0.5
+    
+    def _clean_web_novel_text(self, text: str) -> str:
+        """Clean web novel text by removing artifacts and formatting issues."""
+        # Remove web novel specific artifacts
+        lines = text.split('\n')
+        cleaned_lines = []
+        
+        for line in lines:
+            line = line.strip()
+            
+            # Skip very short lines that might be artifacts (but keep dialogue)
+            if len(line) < 3 and not any(marker in line for marker in ['"', '"', '"', '―', '—']):
+                continue
+            
+            # Skip platform metadata patterns
+            if self._is_web_novel_metadata_line(line):
+                continue
+            
+            # Skip author notes
+            if self._is_author_note_line(line):
                 continue
             
             cleaned_lines.append(line)

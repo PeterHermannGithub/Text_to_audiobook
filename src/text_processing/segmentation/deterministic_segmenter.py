@@ -818,7 +818,94 @@ class DeterministicSegmenter:
             date_keywords = ['published', 'written', 'composed', 'updated', 'revised']
             if any(keyword in segment_lower for keyword in date_keywords):
                 return True
+        
+        # Priority 6: Web novel platform content detection
+        # ENHANCED: Comprehensive web novel platform content filtering
+        
+        # Web novel platform usernames and comments
+        web_novel_usernames = [
+            'tls123', '-tls123', 'translator', 'author', 'editor'
+        ]
+        
+        # Check for platform username patterns
+        for username in web_novel_usernames:
+            if (segment_lower.startswith(username) or 
+                segment_lower.startswith(f'–{username}') or 
+                segment_lower.startswith(f'—{username}')):
+                return True
+        
+        # Web novel comment formatting patterns
+        web_novel_comment_patterns = [
+            r'^–\w+:\s*',  # –username: comment
+            r'^—\w+:\s*',  # —username: comment  
+            r'^-\w+:\s*',  # -username: comment
+            r'^\w+:\s*thank\s+you',  # username: thank you
+            r'^\w+:\s*i\s+was\s+able\s+to\s+complete',  # author completion messages
+            r'^\w+:\s*congratulations',  # congratulation messages
+            r'^\w+:\s*the\s+monetization\s+starts',  # monetization messages
+        ]
+        
+        if any(re.match(pattern, segment_lower) for pattern in web_novel_comment_patterns):
+            return True
             
+        # Web novel specific metadata and platform content
+        web_novel_metadata_indicators = [
+            'ways of survival', 'three ways to survive', 'ruined world',
+            'omniscient reader', 'monetization starts', 'paid service',
+            'competition', 'unknown competition', 'gift certificate',
+            'special gift', 'dear reader', 'this story has come into the world',
+            'thank you for reading', 'please support', 'author note',
+            'translator note', 'tl note', 't/n:', 'chapter navigation',
+            'complete]', '[complete', 'end of chapter', 'next chapter',
+            'previous chapter', 'table of contents', 'chapter index'
+        ]
+        
+        # Check for web novel metadata
+        metadata_count = sum(1 for indicator in web_novel_metadata_indicators 
+                           if indicator in segment_lower)
+        if metadata_count >= 2:
+            return True
+        
+        # Specific web novel platform patterns
+        if (('tls123' in segment_lower and 'author' in segment_lower) or
+            ('ways of survival' in segment_lower and len(segment.strip()) < 100) or
+            ('monetization' in segment_lower and 'starts' in segment_lower) or
+            ('competition' in segment_lower and 'unknown' in segment_lower)):
+            return True
+            
+        # Platform UI elements and navigation
+        platform_ui_indicators = [
+            'bookmark', 'subscribe', 'follow', 'notification', 'alert',
+            'menu', 'homepage', 'profile', 'settings', 'logout', 'login',
+            'register', 'sign up', 'sign in', 'dashboard', 'library',
+            'recommendations', 'popular', 'trending', 'latest', 'search',
+            'filter', 'sort by', 'genre', 'tags', 'rating', 'reviews'
+        ]
+        
+        ui_count = sum(1 for indicator in platform_ui_indicators 
+                      if indicator in segment_lower)
+        if ui_count >= 2 and len(segment.strip()) < 150:
+            return True
+            
+        # Web novel reader interface elements
+        reader_interface_patterns = [
+            r'^[←→]',  # Navigation arrows
+            r'^\d+\.\s*chapter\s*\d+',  # Chapter listings
+            r'^chapter\s+\d+.*→',  # Chapter navigation with arrows
+            r'^←.*chapter\s+\d+',  # Previous chapter navigation
+            r'^\d+\s*/\s*\d+',  # Page numbers like "1 / 50"
+            r'^[《》]',  # Chinese/Korean quotation marks in navigation
+            r'^\s*\|\s*.*\s*\|\s*',  # Pipe-separated navigation
+        ]
+        
+        if any(re.match(pattern, segment) for pattern in reader_interface_patterns):
+            return True
+            
+        # Filter out very short segments that are likely UI elements
+        if (len(segment.strip()) < 10 and 
+            any(ui_word in segment_lower for ui_word in ['next', 'prev', 'home', 'back', 'menu', 'top'])):
+            return True
+        
         return False
     
     def _split_large_segment(self, segment: str) -> List[str]:

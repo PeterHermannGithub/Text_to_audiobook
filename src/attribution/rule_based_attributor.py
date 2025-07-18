@@ -2,6 +2,8 @@ import re
 import logging
 from typing import List, Dict, Any, Tuple
 from fuzzywuzzy import fuzz, process
+from .rule_based_cache import RuleBasedCacheManager
+from config import settings
 
 class RuleBasedAttributor:
     """High-confidence speaker attribution engine using advanced pattern matching.
@@ -97,6 +99,8 @@ class RuleBasedAttributor:
     
     def __init__(self):
         self.logger = logging.getLogger(__name__)
+        self.cache_manager = RuleBasedCacheManager(max_size=settings.RULE_CACHE_MAX_SIZE)
+        self.logger.info(f"Rule-based attributor initialized with caching (enabled: {settings.RULE_CACHE_ENABLED})")
         
         # Expanded dialogue tags for speaker attribution
         self.dialogue_tags = [
@@ -117,7 +121,7 @@ class RuleBasedAttributor:
             'decided', 'concluded', 'assumed', 'believed', 'knew', 'felt'
         ]
         
-        # Enhanced high-confidence patterns for script format
+        # Enhanced high-confidence patterns for script format (including Korean character names)
         self.script_patterns = [
             # Multi-word character names (e.g., "LADY CAPULET:", "First Citizen:")
             r'^(?:–|\s|-)?\s*([A-Z][a-zA-Z0-9_\s\-\'\.]{2,50}):\s*(.*)',  # Enhanced NAME: dialogue
@@ -127,6 +131,12 @@ class RuleBasedAttributor:
             r'^((?:First|Second|Third|Fourth|Fifth)\s+[A-Z][a-z]+):\s*(.*)',  # Numbered titles
             # Character with descriptors (e.g., "ROMEO, aside:", "JULIET, to herself:")
             r'^([A-Z][A-Za-z\s]+?)(?:,\s*(?:aside|to\s+\w+|from\s+\w+))?\s*:\s*(.*)',  # Character with descriptors
+            # Korean character name patterns (romanized)
+            r'^(Kim\s+Dokja|Yoo\s+Sangah|Jung\s+Heewon|Lee\s+Hyunsung|Han\s+Sooyoung|Yu\s+Jonghyuk):\s*(.*)',  # Specific Korean names
+            r'^([A-Z][a-z]*\s+[Dd]ok[a-z]*|[A-Z][a-z]*\s+[Ss]ang[a-z]*|[A-Z][a-z]*\s+[Hh]ee[a-z]*|[A-Z][a-z]*\s+[Hh]yun[a-z]*):\s*(.*)',  # Korean name patterns
+            # Web novel comment attribution patterns
+            r'^–\s*([A-Z][a-z]+(?:\s[A-Z][a-z]+)*):\s*(.*)',  # "– Kim Dokja: Thank you for reading"
+            r'^([A-Z][a-z]+(?:\s[A-Z][a-z]+)*):\s*Writer,?\s*(.*)',  # "Kim Dokja: Writer, thank you"
         ]
         
         # Stage direction patterns (these should be attributed to narrator)
@@ -169,8 +179,16 @@ class RuleBasedAttributor:
             r'"([^"]*)",\s*[-–—]\s*([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)',
             # em-dash dialogue: —Dialogue, speaker said
             r'[–—]\s*"?([^"]*?)"?,?\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\s+(' + '|'.join(self.dialogue_tags) + r')',
-            # Curly quote patterns
-            r'([“"\'‘])(.*?)([”"\'’]),\s*([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)\s+(' + '|'.join(self.dialogue_tags) + r')'
+            # Korean character name specific patterns
+            # Korean names with dialogue tags
+            r'"([^"]*)",\s*(Kim\s+Dokja|Yoo\s+Sangah|Jung\s+Heewon|Lee\s+Hyunsung|Han\s+Sooyoung|Yu\s+Jonghyuk)\s+(' + '|'.join(self.dialogue_tags) + r')',
+            r'(Kim\s+Dokja|Yoo\s+Sangah|Jung\s+Heewon|Lee\s+Hyunsung|Han\s+Sooyoung|Yu\s+Jonghyuk)\s+(' + '|'.join(self.dialogue_tags) + r'),\s*"([^"]*)"',
+            # Flexible Korean name patterns  
+            r'"([^"]*)",\s*([A-Z][a-z]*\s+[Dd]ok[a-z]*|[A-Z][a-z]*\s+[Ss]ang[a-z]*|[A-Z][a-z]*\s+[Hh]ee[a-z]*|[A-Z][a-z]*\s+[Hh]yun[a-z]*)\s+(' + '|'.join(self.dialogue_tags) + r')',
+            r'([A-Z][a-z]*\s+[Dd]ok[a-z]*|[A-Z][a-z]*\s+[Ss]ang[a-z]*|[A-Z][a-z]*\s+[Hh]ee[a-z]*|[A-Z][a-z]*\s+[Hh]yun[a-z]*)\s+(' + '|'.join(self.dialogue_tags) + r'),\s*"([^"]*)"',
+            # Web novel first-person dialogue markers
+            r'I\s+(' + '|'.join(self.dialogue_tags) + r'),\s*"([^"]*)"',  # "I said, 'dialogue'"
+            r'"([^"]*)",\s*I\s+(' + '|'.join(self.dialogue_tags) + r')',  # "'dialogue', I said"
         ]
         
         # Enhanced metadata speakers to filter out (should never be actual character speakers)
@@ -229,7 +247,21 @@ class RuleBasedAttributor:
             
             # Formatting artifacts
             'bold', 'italic', 'underline', 'highlight', 'quote', 'citation',
-            'footnote', 'endnote', 'reference', 'link', 'url', 'http', 'www'
+            'footnote', 'endnote', 'reference', 'link', 'url', 'http', 'www',
+            
+            # Web novel specific metadata to filter out
+            'three ways to survive in a ruined world', 'ways of survival', 'tls123',
+            'complete]', 'web novel', 'light novel', 'author:', 'chapters.',
+            'hits=', 'views:', 'bookmarks:', 'translation by', 'translator note',
+            'tl note', 't/n:', 'translated by', 'next chapter', 'previous chapter',
+            'bookmark this', 'add to library', 'follow author', 'rate this novel',
+            'write a review', 'click here', 'read more', 'continue reading',
+            'thanks for reading', 'please rate', 'please review', 'comments:',
+            'feedback appreciated', 'support the author', 'author\'s words',
+            'damn it, let\'s stop thinking about this', 'thinking about this',
+            'let\'s stop', 'ways', 'survival', 'ruined world', 'meantime',
+            'writer', 'thank you for everything', 'epilogue', 'thank you',
+            'everything', 'thank', 'meantime', 'everything in the meantime'
         }
         
         # Enhanced metadata patterns to detect and filter
@@ -291,7 +323,7 @@ class RuleBasedAttributor:
     
     def process_lines(self, numbered_lines: List[Dict[str, Any]], text_metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
-        Process numbered lines and attempt rule-based speaker attribution.
+        Process numbered lines and attempt rule-based speaker attribution with caching.
         
         Args:
             numbered_lines: List of line objects with 'line_id' and 'text' keys
@@ -308,6 +340,15 @@ class RuleBasedAttributor:
         self.logger.debug(f"Known characters: {list(known_character_names)}")
         self.logger.debug(f"Script format: {is_script_like}, Dialogue markers: {dialogue_markers}")
         
+        # Try batch cache first
+        if settings.RULE_CACHE_ENABLED and settings.RULE_CACHE_BATCH_CACHING:
+            lines_text = [line['text'] for line in numbered_lines]
+            cached_result = self.cache_manager.get_batch_attribution(lines_text, known_character_names, text_metadata)
+            
+            if cached_result is not None:
+                self.logger.info(f"Using cached batch attribution result for {len(numbered_lines)} lines")
+                return cached_result
+        
         attributed_lines = []
         attribution_stats = {self.ATTRIBUTED: 0, self.PENDING_AI: 0}
         
@@ -315,8 +356,8 @@ class RuleBasedAttributor:
             line_id = line['line_id']
             text = line['text']
             
-            # Try rule-based attribution
-            speaker, confidence = self._attribute_speaker(text, known_character_names, is_script_like)
+            # Try rule-based attribution with caching
+            speaker, confidence = self._attribute_speaker_with_cache(text, known_character_names, is_script_like)
             
             if speaker and confidence >= 0.8:  # High confidence threshold
                 attributed_lines.append({
@@ -341,8 +382,40 @@ class RuleBasedAttributor:
                 attribution_stats[self.PENDING_AI] += 1
                 self.logger.debug(f"Line {line_id}: Requires AI processing (confidence: {confidence if speaker else 0.0:.2f})")
         
+        # Cache the batch result
+        if settings.RULE_CACHE_ENABLED and settings.RULE_CACHE_BATCH_CACHING:
+            lines_text = [line['text'] for line in numbered_lines]
+            self.cache_manager.cache_batch_attribution(lines_text, known_character_names, text_metadata, attributed_lines)
+        
         self.logger.info(f"Rule-based attribution results: {attribution_stats[self.ATTRIBUTED]} attributed, {attribution_stats[self.PENDING_AI]} require AI")
         return attributed_lines
+
+    def _attribute_speaker_with_cache(self, text: str, known_character_names: set, is_script_like: bool) -> Tuple[str, float]:
+        """
+        Attempt to attribute a speaker to a text line using cached results when available.
+        
+        Args:
+            text: Text line to attribute
+            known_character_names: Set of known character names
+            is_script_like: Whether content is script-like
+            
+        Returns:
+            Tuple of (speaker_name, confidence_score) where confidence is 0.0-1.0
+        """
+        # Check cache first
+        if settings.RULE_CACHE_ENABLED and settings.RULE_CACHE_LINE_CACHING:
+            cached_result = self.cache_manager.get_line_attribution(text, known_character_names, is_script_like)
+            if cached_result is not None:
+                return cached_result
+        
+        # Cache miss - compute attribution
+        speaker, confidence = self._attribute_speaker(text, known_character_names, is_script_like)
+        
+        # Cache the result
+        if settings.RULE_CACHE_ENABLED and settings.RULE_CACHE_LINE_CACHING and speaker:
+            self.cache_manager.cache_line_attribution(text, known_character_names, speaker, confidence, is_script_like)
+        
+        return speaker, confidence
     
     def _attribute_speaker(self, text: str, known_character_names: set, is_script_like: bool) -> Tuple[str, float]:
         """
@@ -364,6 +437,11 @@ class RuleBasedAttributor:
             speaker, confidence = self._attribute_script_format(text, known_character_names)
             if speaker:
                 return speaker, min(confidence + 0.2, 1.0)  # Boost confidence for script format
+        
+        # Method 1.5: Web novel specific attribution (high priority for web novels)
+        speaker, confidence = self._handle_web_novel_attribution(text, known_character_names)
+        if speaker and speaker != 'PENDING_AI':
+            return speaker, confidence
         
         # Method 2: Dialogue attribution patterns
         speaker, confidence = self._attribute_dialogue_tags(text, known_character_names)
@@ -405,10 +483,7 @@ class RuleBasedAttributor:
     
     def _looks_like_script_line(self, text: str) -> bool:
         """Check if a line looks like script format (NAME: dialogue)."""
-        for pattern in self.script_patterns:
-            if re.match(pattern, text):
-                return True
-        return False
+        return self._cached_pattern_match(text, "script_format", lambda t: any(re.match(pattern, t) for pattern in self.script_patterns))
     
     def _is_stage_direction(self, text: str) -> bool:
         """
@@ -416,6 +491,10 @@ class RuleBasedAttributor:
         
         Returns True for stage directions like "Enter ROMEO", "They fight", etc.
         """
+        return self._cached_pattern_match(text, "stage_direction", self._compute_stage_direction)
+    
+    def _compute_stage_direction(self, text: str) -> bool:
+        """Compute whether text is a stage direction (used for caching)."""
         text = text.strip()
         if not text:
             return False
@@ -475,9 +554,9 @@ class RuleBasedAttributor:
                 
                 # Try fuzzy matching with known characters
                 if known_character_names:
-                    best_match = process.extractOne(potential_speaker, list(known_character_names), scorer=fuzz.token_set_ratio)
-                    if best_match and best_match[1] > 85:
-                        return best_match[0], 0.85
+                    fuzzy_result = self._cached_fuzzy_match(potential_speaker, known_character_names, fuzz.token_set_ratio, 85)
+                    if fuzzy_result:
+                        return fuzzy_result[0], 0.85
                 
                 # Enhanced character name validation for scripts
                 if self._is_likely_script_character_name(potential_speaker):
@@ -536,6 +615,51 @@ class RuleBasedAttributor:
         if self._is_metadata_speaker(name):
             return False
         
+        # CRITICAL: Filter out spurious character names from web novels
+        
+        # 1. Filter out questions (they're thoughts, not character names)
+        if name.endswith('?') or '?' in name:
+            return False
+        
+        # 2. Filter out long sentences (>50 chars are likely thoughts/narratives)
+        if len(name) > 50:
+            return False
+        
+        # 3. Filter out first-person thoughts and web novel specific patterns
+        name_lower = name.lower()
+        spurious_patterns = [
+            r'i\s+(?:was|am|will|would|could|should|have|had|felt|thought|knew|realized)',
+            r'my\s+(?:name|life|face|mind|heart|body)',
+            r'the\s+(?:author|story|novel|book|way|world)',
+            r'damn\s+it.*thinking',
+            r'let\'s\s+stop\s+thinking',
+            r'if\s+they\s+even\s+looked',
+            r'why\s+didn\'t\s+anyone',
+            r'this\s+is\s+(?:a|the)',
+            r'there\s+(?:was|were|is|are)',
+            r'it\s+(?:was|is|will)',
+        ]
+        
+        for pattern in spurious_patterns:
+            if re.search(pattern, name_lower):
+                return False
+        
+        # 4. Filter out web novel platform metadata and comments
+        web_novel_metadata = [
+            'isn\'t his recommendation banned',
+            'the author shouldn\'t do this',
+            'if they even looked a little bit',
+            'ways to survive in a ruined world',
+            'three ways to survive',
+            'omniscient reader',
+            'attention seeker',
+            'dumbass',
+        ]
+        
+        for metadata in web_novel_metadata:
+            if metadata in name_lower:
+                return False
+        
         # Script-specific character patterns
         
         # Title-based characters are valid in scripts
@@ -574,6 +698,304 @@ class RuleBasedAttributor:
         
         return True
     
+    def _handle_web_novel_attribution(self, text: str, known_character_names: set) -> Tuple[str, float]:
+        """
+        Enhanced attribution method specifically for web novel patterns.
+        
+        Handles web novel specific cases like:
+        - First-person narrative vs dialogue
+        - Korean character names
+        - Web novel comment patterns
+        - Internal monologue detection
+        """
+        text_lower = text.lower()
+        
+        # ENHANCED: Web novel platform comment handler
+        # Priority 1: Handle web novel platform comment formats
+        
+        # Platform comment patterns (–username: comment, —username: comment, etc.)
+        platform_comment_patterns = [
+            r'^–\s*([a-zA-Z0-9_]+)\s*:\s*(.+)$',  # –username: comment
+            r'^—\s*([a-zA-Z0-9_]+)\s*:\s*(.+)$',  # —username: comment  
+            r'^-\s*([a-zA-Z0-9_]+)\s*:\s*(.+)$',  # -username: comment
+            r'^([a-zA-Z0-9_]+)\s*:\s*(thank\s+you|congratulations|the\s+author|writer).*$',  # username: platform messages
+        ]
+        
+        for pattern in platform_comment_patterns:
+            match = re.match(pattern, text.strip())
+            if match:
+                username = match.group(1).strip()
+                comment_content = match.group(2).strip()
+                
+                # Platform usernames should be filtered out, not used as characters
+                platform_usernames = ['tls123', 'author', 'translator', 'editor', 'admin', 'moderator']
+                
+                if username.lower() in platform_usernames:
+                    # Author/translator messages should be attributed to narrator
+                    if username.lower() in ['tls123', 'author', 'translator']:
+                        return 'narrator', 0.90
+                    # Other platform messages should be filtered out
+                    else:
+                        return 'AMBIGUOUS', 0.10
+                
+                # Check if this is a character name in a comment format
+                # Look for known character names in the username
+                for char_name in known_character_names:
+                    char_name_clean = char_name.lower().replace(' ', '')
+                    username_clean = username.lower().replace(' ', '')
+                    
+                    if (char_name_clean in username_clean or 
+                        username_clean in char_name_clean or
+                        fuzz.ratio(char_name_clean, username_clean) > 80):
+                        return char_name, 0.85
+                
+                # Check Korean character patterns in usernames
+                korean_username_patterns = [
+                    (r'kim.*dokja?|dokja.*kim?', 'Kim Dokja'),
+                    (r'yoo.*sangah?|sangah.*yoo?', 'Yoo Sangah'),
+                    (r'jung.*heewon|heewon.*jung', 'Jung Heewon'),
+                    (r'lee.*hyunsung|hyunsung.*lee', 'Lee Hyunsung'),
+                ]
+                
+                for pattern, char_name in korean_username_patterns:
+                    if re.search(pattern, username.lower()):
+                        return char_name, 0.85
+                
+                # If it's not a known character or platform user, treat as AMBIGUOUS
+                return 'AMBIGUOUS', 0.30
+        
+        # Web novel reader interface messages
+        reader_interface_patterns = [
+            r'^\[.*\]$',  # [System messages], [Complete], etc.
+            r'^<.*>$',   # <Navigation>, <Menu>, etc.
+            r'^.*→.*$',  # Chapter navigation arrows
+            r'^.*←.*$',  # Previous chapter arrows
+            r'^\d+\s*/\s*\d+$',  # Page numbers
+        ]
+        
+        for pattern in reader_interface_patterns:
+            if re.match(pattern, text.strip()):
+                return 'narrator', 0.95  # Interface messages are narrative metadata
+        
+        # Web novel metadata messages
+        metadata_message_patterns = [
+            r'monetization\s+starts?',
+            r'paid\s+service',
+            r'gift\s+certificate',
+            r'special\s+gift',
+            r'competition.*winner?',
+            r'dear\s+reader',
+            r'thank\s+you\s+for\s+reading',
+            r'please\s+support',
+            r'update\s+schedule',
+            r'chapter\s+release',
+        ]
+        
+        for pattern in metadata_message_patterns:
+            if re.search(pattern, text_lower):
+                return 'narrator', 0.85  # Metadata messages are narrative
+        
+        # ENHANCED: Fine-tuned first-person attribution to reduce over-correction
+        # Priority 2: Balance first-person thoughts vs. actual dialogue
+        
+        # First check if this is quoted dialogue (should NOT be attributed to narrator)
+        quoted_dialogue_patterns = [
+            r'^".*[.!?]"\s*$',  # Complete quoted sentences
+            r'^".*[.!?]",\s*(?:he|she|they|[A-Z][a-z]+)\s+(?:said|asked|replied|whispered|shouted)',  # Quoted with attribution
+            r'^".*[.!?]"\s*(?:he|she|they|[A-Z][a-z]+)\s+(?:said|asked|replied|whispered|shouted)',  # Quoted with attribution
+            r'^".*",\s*(?:he|she|they|[A-Z][a-z]+)\s+(?:said|asked|replied|whispered|shouted)',  # Quoted with attribution
+        ]
+        
+        is_quoted_dialogue = any(re.search(pattern, text.strip()) for pattern in quoted_dialogue_patterns)
+        
+        if is_quoted_dialogue:
+            # This is likely actual dialogue, don't force to narrator
+            return 'PENDING_AI', 0.0
+        
+        # Internal thought patterns (should be attributed to narrator)
+        internal_thought_patterns = [
+            r'i\s+(?:thought|wondered|realized|remembered|felt|knew|believed|understood|noticed)',
+            r'i\s+(?:couldn\'t\s+believe|couldn\'t\s+help|couldn\'t\s+stop)',
+            r'i\s+(?:had\s+to|needed\s+to|wanted\s+to|tried\s+to|decided\s+to)',
+            r'my\s+(?:thoughts|mind|heart|feelings|memories|body)',
+            r'i\s+(?:was\s+thinking|was\s+wondering|was\s+feeling)',
+        ]
+        
+        # Action/movement patterns (should be attributed to narrator)
+        action_patterns = [
+            r'i\s+(?:looked|walked|went|came|saw|heard|found|tried|moved|turned|opened|closed)',
+            r'i\s+(?:gave|took|put|picked|grabbed|held|carried|brought)',
+            r'i\s+(?:entered|left|arrived|departed|climbed|descended|approached)',
+        ]
+        
+        # State/being patterns (more ambiguous, use lower confidence)
+        state_patterns = [
+            r'i\s+(?:was|am|have|had|will|would|could|should|must)',
+            r'i\s+(?:feel|think|believe|hope|wish|want|need)',
+            r'my\s+(?:name|life|job|work|home|family)',
+        ]
+        
+        # Check internal thoughts first (high confidence for narrator)
+        for pattern in internal_thought_patterns:
+            if re.search(pattern, text_lower):
+                return 'narrator', 0.90  # High confidence for internal thoughts
+        
+        # Check actions (medium-high confidence for narrator)
+        for pattern in action_patterns:
+            if re.search(pattern, text_lower):
+                return 'narrator', 0.80  # Medium-high confidence for actions
+        
+        # Check states (lower confidence, more ambiguous)
+        for pattern in state_patterns:
+            if re.search(pattern, text_lower):
+                # Additional context check for state patterns
+                # If it contains dialogue markers, it might be actual dialogue
+                dialogue_context_markers = ['"', '"', '"', ':', 'said', 'asked', 'replied', 'whispered']
+                if any(marker in text.lower() for marker in dialogue_context_markers):
+                    return 'PENDING_AI', 0.0  # Let AI decide
+                else:
+                    return 'narrator', 0.70  # Moderate confidence for states
+        
+        # Web novel internal monologue patterns
+        internal_monologue_patterns = [
+            r'^\s*[\'\"].*[\'\"]$',  # Quoted thoughts
+            r'^\s*\(.*\)$',  # Parenthetical thoughts
+            r'^\s*\[.*\]$',  # Bracketed thoughts or system messages
+            r'damn\s+it,?\s+let\'s\s+stop\s+thinking',  # Web novel specific internal thoughts
+            r'i\s+scrolled\s+(?:down|up)',  # Web novel reader actions
+            r'the\s+story\s+was\s+over',  # Meta-narrative thoughts
+        ]
+        
+        for pattern in internal_monologue_patterns:
+            if re.search(pattern, text, re.IGNORECASE):
+                # Attribute to protagonist if it's internal thoughts
+                for char_name in known_character_names:
+                    char_lower = char_name.lower()
+                    if 'kim dokja' in char_lower or 'dokja' in char_lower:
+                        return char_name, 0.80
+                return 'Kim Dokja', 0.70
+        
+        # Korean character name recognition with variations
+        korean_char_patterns = [
+            (r'\b(kim\s+dokja?|dokja)\b', 'Kim Dokja', 0.90),
+            (r'\b(yoo\s+sangah?|sangah)\b', 'Yoo Sangah', 0.90),
+            (r'\b(jung\s+heewon|heewon)\b', 'Jung Heewon', 0.90),
+            (r'\b(lee\s+hyunsung|hyunsung)\b', 'Lee Hyunsung', 0.90),
+            (r'\b(han\s+sooyoung|sooyoung)\b', 'Han Sooyoung', 0.90),
+            (r'\b(yu\s+jonghyuk|jonghyuk)\b', 'Yu Jonghyuk', 0.90),
+        ]
+        
+        for pattern, char_name, confidence in korean_char_patterns:
+            if re.search(pattern, text_lower):
+                return char_name, confidence
+        
+        # Web novel comment and author interaction patterns
+        comment_patterns = [
+            r'–\s*([A-Z][a-z]+(?:\s[A-Z][a-z]+)*):\s*(?:writer|author)',
+            r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*):\s*thank\s+you',
+            r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*):\s*(?:writer|author),?\s+thank',
+        ]
+        
+        for pattern in comment_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                speaker_name = match.group(1)
+                if not self._is_metadata_speaker(speaker_name):
+                    normalized_name = self._normalize_web_novel_character_name(speaker_name)
+                    if normalized_name:  # Only return if normalization didn't filter it out
+                        return normalized_name, 0.85
+        
+        # Web novel dialogue with Korean names
+        web_novel_dialogue_patterns = [
+            r'"([^"]*)",\s*(Kim\s+Dokja|Yoo\s+Sangah|Jung\s+Heewon|Lee\s+Hyunsung)',
+            r'(Kim\s+Dokja|Yoo\s+Sangah|Jung\s+Heewon|Lee\s+Hyunsung)\s*:\s*"([^"]*)"',
+            r'"([^"]*)",\s*([A-Z][a-z]*\s+[Dd]ok[a-z]*|[A-Z][a-z]*\s+[Ss]ang[a-z]*)',
+        ]
+        
+        for pattern in web_novel_dialogue_patterns:
+            match = re.search(pattern, text)
+            if match:
+                # Find the speaker name (not the dialogue)
+                groups = match.groups()
+                for group in groups:
+                    if group and not (group.startswith('"') or '"' in group):
+                        if not self._is_metadata_speaker(group):
+                            normalized_name = self._normalize_web_novel_character_name(group)
+                            if normalized_name:  # Only return if normalization didn't filter it out
+                                return normalized_name, 0.85
+        
+        # No web novel specific pattern found
+        return 'PENDING_AI', 0.0
+    
+    def _normalize_web_novel_character_name(self, raw_name: str) -> str:
+        """
+        Normalize web novel character names, handling Korean romanization variations.
+        """
+        if not raw_name:
+            return ""
+        
+        name = raw_name.strip()
+        
+        # Handle Korean name variations and web novel specific names
+        korean_normalizations = {
+            'kim dok-ja': 'Kim Dokja',
+            'kim dokja': 'Kim Dokja',
+            'dokja': 'Kim Dokja',
+            'yoo sang-ah': 'Yoo Sangah',
+            'yoo sangah': 'Yoo Sangah',
+            'sangah': 'Yoo Sangah',
+            'jung hee-won': 'Jung Heewon',
+            'jung heewon': 'Jung Heewon',
+            'heewon': 'Jung Heewon',
+            'lee hyun-sung': 'Lee Hyunsung',
+            'lee hyunsung': 'Lee Hyunsung',
+            'hyunsung': 'Lee Hyunsung',
+            'han soo-young': 'Han Sooyoung',
+            'han sooyoung': 'Han Sooyoung',
+            'sooyoung': 'Han Sooyoung',
+            'yu jong-hyuk': 'Yu Jonghyuk',
+            'yu jonghyuk': 'Yu Jonghyuk',
+            'jonghyuk': 'Yu Jonghyuk',
+        }
+        
+        # Web novel specific character normalizations
+        web_novel_normalizations = {
+            'the omniscient reader': 'narrator',
+            'omniscient reader': 'narrator', 
+            'tls123': None,  # Filter out author username
+            'three ways to survive in a ruined world': None,  # Filter out title
+            'ways of survival': None,  # Filter out title
+            'damn it, let\'s stop thinking about this': None,  # Filter out narrative fragments
+            'thinking about this': None,
+            'let\'s stop': None,
+            'everything in the meantime': None,
+            'thank you for everything': None,
+        }
+        
+        name_lower = name.lower()
+        
+        # Check web novel specific normalizations first (includes filtering)
+        if name_lower in web_novel_normalizations:
+            result = web_novel_normalizations[name_lower]
+            return result if result is not None else ""  # Return empty string for filtered names
+        
+        # Check Korean normalizations
+        if name_lower in korean_normalizations:
+            return korean_normalizations[name_lower]
+        
+        # Handle partial matches for Korean names
+        for partial, full_name in korean_normalizations.items():
+            if partial in name_lower and len(partial) > 3:  # Avoid false matches
+                return full_name
+        
+        # Check for web novel partial matches that should be filtered
+        for partial_name in ['tls123', 'ways of survival', 'omniscient reader']:
+            if partial_name in name_lower:
+                return ""  # Filter out
+        
+        # Standard title case normalization
+        return name.title()
+    
     def _attribute_dialogue_tags(self, text: str, known_character_names: set) -> Tuple[str, float]:
         """Attribute speaker using dialogue tag patterns like 'said John'."""
         for pattern in self.dialogue_attribution_patterns:
@@ -597,9 +1019,9 @@ class RuleBasedAttributor:
                     if speaker_name in known_character_names:
                         return speaker_name, 0.9
                     elif known_character_names:
-                        best_match = process.extractOne(speaker_name, list(known_character_names), scorer=fuzz.token_set_ratio)
-                        if best_match and best_match[1] > 80:
-                            return best_match[0], 0.8
+                        fuzzy_result = self._cached_fuzzy_match(speaker_name, known_character_names, fuzz.token_set_ratio, 80)
+                        if fuzzy_result:
+                            return fuzzy_result[0], 0.8
                     
                     # Accept if it looks like a proper name
                     return speaker_name, 0.7
@@ -648,9 +1070,9 @@ class RuleBasedAttributor:
                 if potential_speaker in known_character_names:
                     return potential_speaker, 0.85
                 elif known_character_names:
-                    best_match = process.extractOne(potential_speaker, list(known_character_names), scorer=fuzz.token_set_ratio)
-                    if best_match and best_match[1] > 80:
-                        return best_match[0], 0.75
+                    fuzzy_result = self._cached_fuzzy_match(potential_speaker, known_character_names, fuzz.token_set_ratio, 80)
+                    if fuzzy_result:
+                        return fuzzy_result[0], 0.75
                 
                 # Accept if it looks like a proper name
                 if self._is_likely_character_name(potential_speaker):
@@ -678,9 +1100,9 @@ class RuleBasedAttributor:
                 if potential_speaker in known_character_names:
                     return potential_speaker, 0.80
                 elif known_character_names:
-                    best_match = process.extractOne(potential_speaker, list(known_character_names), scorer=fuzz.token_set_ratio)
-                    if best_match and best_match[1] > 75:
-                        return best_match[0], 0.70
+                    fuzzy_result = self._cached_fuzzy_match(potential_speaker, known_character_names, fuzz.token_set_ratio, 75)
+                    if fuzzy_result:
+                        return fuzzy_result[0], 0.70
                 
                 # Accept if it looks like a proper name
                 if self._is_likely_character_name(potential_speaker):
@@ -707,9 +1129,9 @@ class RuleBasedAttributor:
                 if potential_speaker in known_character_names:
                     return potential_speaker, 0.75
                 elif known_character_names:
-                    best_match = process.extractOne(potential_speaker, list(known_character_names), scorer=fuzz.token_set_ratio)
-                    if best_match and best_match[1] > 80:
-                        return best_match[0], 0.70
+                    fuzzy_result = self._cached_fuzzy_match(potential_speaker, known_character_names, fuzz.token_set_ratio, 80)
+                    if fuzzy_result:
+                        return fuzzy_result[0], 0.70
         
         return None, 0.0
     
@@ -852,6 +1274,10 @@ class RuleBasedAttributor:
         
         Returns True if the speaker should be filtered out as metadata.
         """
+        return self._cached_pattern_match(speaker_name, "metadata_speaker", self._compute_metadata_speaker)
+    
+    def _compute_metadata_speaker(self, speaker_name: str) -> bool:
+        """Compute whether speaker name is metadata (used for caching)."""
         if not speaker_name:
             return True
             
@@ -932,3 +1358,87 @@ class RuleBasedAttributor:
     def get_attributed_lines(self, attributed_lines: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Extract lines that were successfully attributed by rules."""
         return [line for line in attributed_lines if line['attribution_status'] == self.ATTRIBUTED]
+
+    def _cached_fuzzy_match(self, text: str, character_names: set, scorer=fuzz.token_set_ratio, threshold: int = 80) -> Optional[Tuple[str, int]]:
+        """
+        Perform fuzzy matching with caching for expensive operations.
+        
+        Args:
+            text: Text to match against
+            character_names: Set of character names to match
+            scorer: Fuzzy matching scorer function
+            threshold: Minimum score threshold
+            
+        Returns:
+            Tuple of (best_match, score) or None if no match above threshold
+        """
+        if not character_names:
+            return None
+        
+        # Check cache first
+        if settings.RULE_CACHE_ENABLED and settings.RULE_CACHE_FUZZY_CACHING:
+            cached_result = self.cache_manager.get_fuzzy_match_result(text, character_names, threshold)
+            if cached_result is not None:
+                return cached_result
+        
+        # Cache miss - compute fuzzy match
+        try:
+            result = process.extractOne(text, list(character_names), scorer=scorer)
+            if result and result[1] > threshold:
+                best_match, score = result[0], result[1]
+            else:
+                best_match, score = None, 0
+        except Exception as e:
+            self.logger.error(f"Fuzzy matching failed: {e}")
+            best_match, score = None, 0
+        
+        # Cache the result
+        if settings.RULE_CACHE_ENABLED and settings.RULE_CACHE_FUZZY_CACHING:
+            self.cache_manager.cache_fuzzy_match_result(text, character_names, best_match or "", score, threshold)
+        
+        return (best_match, score) if best_match else None
+
+    def _cached_pattern_match(self, text: str, pattern_type: str, pattern_func, additional_context: Optional[str] = None) -> bool:
+        """
+        Perform pattern matching with caching for expensive regex operations.
+        
+        Args:
+            text: Text to match pattern against
+            pattern_type: Type of pattern for cache key
+            pattern_func: Function that performs the pattern matching
+            additional_context: Additional context for cache key
+            
+        Returns:
+            True if pattern matches, False otherwise
+        """
+        # Check cache first
+        if settings.RULE_CACHE_ENABLED and settings.RULE_CACHE_PATTERN_CACHING:
+            cached_result = self.cache_manager.get_pattern_match_result(text, pattern_type, additional_context)
+            if cached_result is not None:
+                return cached_result
+        
+        # Cache miss - compute pattern match
+        try:
+            matches = pattern_func(text)
+        except Exception as e:
+            self.logger.error(f"Pattern matching failed for {pattern_type}: {e}")
+            matches = False
+        
+        # Cache the result
+        if settings.RULE_CACHE_ENABLED and settings.RULE_CACHE_PATTERN_CACHING:
+            self.cache_manager.cache_pattern_match_result(text, pattern_type, matches, additional_context)
+        
+        return matches
+
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """Get comprehensive cache statistics."""
+        return self.cache_manager.get_cache_stats()
+    
+    def clear_cache(self) -> None:
+        """Clear all cached rule-based results."""
+        self.cache_manager.clear_cache()
+        self.logger.info("Rule-based cache cleared")
+    
+    def clear_expired_cache(self) -> int:
+        """Clear expired cache entries and return count."""
+        return self.cache_manager.clear_expired_entries()

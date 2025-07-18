@@ -1,9 +1,11 @@
 import re
 import spacy
+import logging
 from fuzzywuzzy import fuzz, process
 from config import settings
 from typing import Dict, List, Set, Any
 from collections import defaultdict
+from .preprocessing_cache import PreprocessingCacheManager
 
 class CharacterProfile:
     """
@@ -52,6 +54,11 @@ class CharacterProfile:
 class TextPreprocessor:
     def __init__(self, nlp_model):
         self.nlp = nlp_model
+        self.cache_manager = PreprocessingCacheManager()
+        self.logger = logging.getLogger(__name__)
+        
+        # Get spaCy model name for cache keys
+        self.spacy_model_name = getattr(nlp_model, 'meta', {}).get('name', 'en_core_web_sm')
         
         # Pronoun mappings for gender detection
         self.pronoun_groups = {
@@ -76,8 +83,13 @@ class TextPreprocessor:
     def analyze(self, text):
         """
         Analyzes the raw text to extract structural hints, character profiles, and POV analysis.
-        Enhanced with Ultrathink architecture's POV analysis.
+        Enhanced with Ultrathink architecture's POV analysis and comprehensive caching.
         """
+        # Check cache for full preprocessing result first
+        cached_result = self.cache_manager.get_full_preprocessing_result(text, self.spacy_model_name)
+        if cached_result is not None:
+            return cached_result
+        
         metadata = {
             "dialogue_markers": set(),
             "scene_breaks": [], # List of character indices where scene breaks occur
@@ -94,10 +106,8 @@ class TextPreprocessor:
         # Standardize ellipses
         text = re.sub(r'\.{2,}', '...', text)
 
-        # Process the entire text with spaCy once
-        doc = None
-        if self.nlp:
-            doc = self.nlp(text)
+        # Process the entire text with spaCy once (with caching)
+        doc = self._get_spacy_doc_with_cache(text)
 
         # 2. Dialogue Marker Detection
         if '"' in text: # Basic check for double quotes
@@ -110,20 +120,20 @@ class TextPreprocessor:
         if re.search(r'^(?:–|\s|-)?\s*[A-Z][a-zA-Z0-9_\s]*:\s*', text, re.MULTILINE):
             metadata['dialogue_markers'].add('script_format')
 
-        # 3. Enhanced Scene Break Detection
-        scene_breaks = self._detect_scene_breaks(text)
+        # 3. Enhanced Scene Break Detection (with caching)
+        scene_breaks = self._detect_scene_breaks_with_cache(text)
         metadata['scene_breaks'] = scene_breaks
         
-        # 3.5. Document Structure Analysis
-        document_structure = self._analyze_document_structure(text)
+        # 3.5. Document Structure Analysis (with caching)
+        document_structure = self._analyze_document_structure_with_cache(text)
         metadata['document_structure'] = document_structure
 
-        # 3.7. POV Analysis (Ultrathink Architecture - Phase 1)
-        pov_analysis = self.analyze_pov_profile(text)
+        # 3.7. POV Analysis (Ultrathink Architecture - Phase 1, with caching)
+        pov_analysis = self._analyze_pov_profile_with_cache(text)
         metadata['pov_analysis'] = pov_analysis
 
-        # 4. Enhanced Character Profiling
-        character_profiles = self._extract_character_profiles(text, doc)
+        # 4. Enhanced Character Profiling (with caching)
+        character_profiles = self._extract_character_profiles_with_cache(text, doc)
         metadata['character_profiles'] = [profile.to_dict() for profile in character_profiles.values()]
         
         # Maintain backward compatibility
@@ -174,7 +184,151 @@ class TextPreprocessor:
                 (script_line_count >= 5 and stage_direction_count >= 2)):
                 metadata['is_script_like'] = True
 
+        # Cache the full result
+        self.cache_manager.cache_full_preprocessing_result(text, metadata, self.spacy_model_name)
+        
         return metadata
+    
+    def _get_spacy_doc_with_cache(self, text: str):
+        """
+        Get spaCy document with caching support.
+        
+        Args:
+            text: Text to process with spaCy
+            
+        Returns:
+            spaCy Doc object
+        """
+        if not self.nlp:
+            return None
+            
+        # Check cache for serialized spaCy doc
+        cached_doc_bytes = self.cache_manager.get_spacy_doc_bytes(text, self.spacy_model_name)
+        if cached_doc_bytes is not None:
+            try:
+                # Deserialize cached spaCy doc
+                doc = self.nlp.from_bytes(cached_doc_bytes)
+                return doc
+            except Exception as e:
+                self.logger.error(f"Failed to deserialize cached spaCy doc: {e}")
+                # Fall through to fresh processing
+        
+        # Cache miss - process with spaCy
+        doc = self.nlp(text)
+        
+        # Cache the serialized doc
+        if settings.SPACY_CACHE_ENABLED and settings.SPACY_CACHE_SERIALIZE_DOCS:
+            try:
+                doc_bytes = doc.to_bytes()
+                self.cache_manager.cache_spacy_doc_bytes(text, doc_bytes, self.spacy_model_name)
+            except Exception as e:
+                self.logger.error(f"Failed to cache spaCy doc: {e}")
+        
+        return doc
+    
+    def _detect_scene_breaks_with_cache(self, text: str) -> List[int]:
+        """
+        Detect scene breaks with caching support.
+        
+        Args:
+            text: Text to detect scene breaks in
+            
+        Returns:
+            List of scene break positions
+        """
+        # Check cache first
+        cached_scene_breaks = self.cache_manager.get_scene_breaks(text)
+        if cached_scene_breaks is not None:
+            return cached_scene_breaks
+        
+        # Cache miss - compute scene breaks
+        scene_breaks = self._detect_scene_breaks(text)
+        
+        # Cache the result
+        self.cache_manager.cache_scene_breaks(text, scene_breaks)
+        
+        return scene_breaks
+    
+    def _analyze_document_structure_with_cache(self, text: str) -> Dict[str, Any]:
+        """
+        Analyze document structure with caching support.
+        
+        Args:
+            text: Text to analyze
+            
+        Returns:
+            Document structure analysis
+        """
+        # Check cache first
+        cached_structure = self.cache_manager.get_document_structure(text)
+        if cached_structure is not None:
+            return cached_structure
+        
+        # Cache miss - compute document structure
+        document_structure = self._analyze_document_structure(text)
+        
+        # Cache the result
+        self.cache_manager.cache_document_structure(text, document_structure)
+        
+        return document_structure
+    
+    def _analyze_pov_profile_with_cache(self, text: str) -> Dict[str, Any]:
+        """
+        Analyze POV profile with caching support.
+        
+        Args:
+            text: Text to analyze
+            
+        Returns:
+            POV analysis result
+        """
+        # Check cache first
+        cached_pov = self.cache_manager.get_pov_analysis(text, settings.POV_SAMPLE_SIZE)
+        if cached_pov is not None:
+            return cached_pov
+        
+        # Cache miss - compute POV analysis
+        pov_analysis = self.analyze_pov_profile(text)
+        
+        # Cache the result
+        self.cache_manager.cache_pov_analysis(text, pov_analysis, settings.POV_SAMPLE_SIZE)
+        
+        return pov_analysis
+    
+    def _extract_character_profiles_with_cache(self, text: str, doc) -> Dict[str, CharacterProfile]:
+        """
+        Extract character profiles with caching support.
+        
+        Args:
+            text: Text to extract characters from
+            doc: spaCy Doc object
+            
+        Returns:
+            Dictionary mapping character names to CharacterProfile objects
+        """
+        # Check cache first
+        cached_profiles = self.cache_manager.get_character_profiles(text, self.spacy_model_name)
+        if cached_profiles is not None:
+            # Convert cached profiles back to CharacterProfile objects
+            profiles = {}
+            for profile_dict in cached_profiles:
+                profile = CharacterProfile(profile_dict['name'])
+                profile.pronouns = set(profile_dict.get('pronouns', []))
+                profile.aliases = set(profile_dict.get('aliases', []))
+                profile.titles = set(profile_dict.get('titles', []))
+                profile.confidence = profile_dict.get('confidence', 0.0)
+                profile.appearance_count = profile_dict.get('appearance_count', 0)
+                profiles[profile.name] = profile
+            return profiles
+        
+        # Cache miss - extract character profiles
+        character_profiles = self._extract_character_profiles(text, doc)
+        
+        # Cache the result (convert to serializable format)
+        profile_dicts = [profile.to_dict() for profile in character_profiles.values()]
+        self.cache_manager.cache_character_profiles(text, profile_dicts, self.spacy_model_name)
+        
+        return character_profiles
     
     def _extract_character_profiles(self, text: str, doc) -> Dict[str, CharacterProfile]:
         """
@@ -858,11 +1012,22 @@ class TextPreprocessor:
             'confidence': 0.0
         }
         
-        # Pattern 1: "My name is X" or "I am X"
+        # Pattern 1: "My name is X" or "I am X" - Enhanced for web novels
         name_introduction_patterns = [
+            # Standard patterns
             r'(?:my name is|i am|i\'m called|call me|i go by)\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)',
             r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)[,.]?\s+(?:that\'s me|that was me|here)',
-            r'i[,.]?\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)[,.]?\s+(?:was|am|have|had)'
+            r'i[,.]?\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)[,.]?\s+(?:was|am|have|had)',
+            # Web novel specific patterns
+            r'i\'m\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)[,.]?\s+(?:and|by the way|actually)',
+            r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)[,.]?\s+(?:is what|is how)\s+(?:they call|people call|everyone calls)\s+me',
+            # Korean name patterns (romanized)
+            r'(?:my name is|i am|i\'m called|call me|i go by)\s+([A-Z][a-z]*\s?[Dd]ok[a-z]*|[A-Z][a-z]*\s?[Ss]ang[a-z]*|[A-Z][a-z]*\s?[Hh]ee[a-z]*|[A-Z][a-z]*\s?[Hh]yun[a-z]*)',
+            # First-person web novel specific patterns
+            r'the\s+protagonist[,.]?\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)[,.]?\s+(?:was|is)',
+            # Unique web novel first-person markers
+            r'i\s+(?:kim\s+dokja|yoo\s+sangah|jung\s+heewon|lee\s+hyunsung)',
+            r'–\s*([A-Z][a-z]+(?:\s[A-Z][a-z]+)*):\s+.*thank\s+you',  # Comment attribution patterns
         ]
         
         for pattern in name_introduction_patterns:
@@ -1000,13 +1165,47 @@ class TextPreprocessor:
             r'chapter|section|page|book',  # Document structure words
             r'said|asked|replied|thought',  # Dialogue tags
             r'the|and|but|for|with',  # Common non-name words
+            # Web novel specific invalid patterns
+            r'ways\s+of\s+survival|three\s+ways|complete\]|author|tls123',
+            r'damn\s+it|let\'s\s+stop|thinking\s+about\s+this',  # Narrative fragments
+            r'thank\s+you|writer|meantime|epilogue',  # Author/meta content
         ]
         
         for pattern in invalid_patterns:
             if re.search(pattern, name, re.IGNORECASE):
                 return False
         
+        # Enhanced validation for Korean names (romanized)
+        if self._is_korean_character_name(name):
+            return True
+        
+        # Enhanced validation for web novel protagonist names
+        if self._is_web_novel_protagonist_name(name):
+            return True
+        
         return True
+    
+    def _is_korean_character_name(self, name: str) -> bool:
+        """Check if name matches Korean character name patterns."""
+        korean_name_patterns = [
+            r'kim\s+dok[a-z]*|yoo\s+sang[a-z]*|jung\s+hee[a-z]*|lee\s+hyun[a-z]*',
+            r'[A-Z][a-z]*\s+[Dd]ok[a-z]*|[A-Z][a-z]*\s+[Ss]ang[a-z]*',
+            r'[A-Z][a-z]*\s+[Hh]ee[a-z]*|[A-Z][a-z]*\s+[Hh]yun[a-z]*',
+        ]
+        
+        for pattern in korean_name_patterns:
+            if re.search(pattern, name, re.IGNORECASE):
+                return True
+        return False
+    
+    def _is_web_novel_protagonist_name(self, name: str) -> bool:
+        """Check if name matches common web novel protagonist patterns."""
+        web_novel_protagonists = [
+            'kim dokja', 'yoo sangah', 'jung heewon', 'lee hyunsung',
+            'han sooyoung', 'yu jonghyuk', 'shin yoosung', 'lee gilyoung'
+        ]
+        
+        return name.lower() in web_novel_protagonists
     
     def _normalize_character_name(self, raw_name: str) -> str:
         """

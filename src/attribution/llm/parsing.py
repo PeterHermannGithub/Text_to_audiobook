@@ -355,3 +355,142 @@ class JSONParser:
             return line.replace(match.group(0), fixed)
         
         return line
+
+    def parse_batch_speaker_array(self, response_text: str, batch_sizes: List[int], attempt: int) -> Optional[List[List[str]]]:
+        """
+        Parse batch speaker classification response into multiple arrays.
+        
+        This method handles responses that contain multiple speaker arrays for batch processing,
+        dramatically improving performance by processing multiple segments in a single request.
+        
+        Args:
+            response_text: Raw LLM response text
+            batch_sizes: List of expected sizes for each batch
+            attempt: Current attempt number for logging
+            
+        Returns:
+            List of speaker arrays, one for each batch, or None if parsing fails
+        """
+        if not response_text or not batch_sizes:
+            return None
+            
+        batch_count = len(batch_sizes)
+        total_expected = sum(batch_sizes)
+        
+        # Step 1: Try to parse as a direct nested array
+        try:
+            data = json.loads(response_text.strip())
+            if isinstance(data, list) and len(data) == batch_count:
+                # Validate each sub-array
+                valid_batch = True
+                for i, (sub_array, expected_size) in enumerate(zip(data, batch_sizes)):
+                    if not isinstance(sub_array, list) or len(sub_array) != expected_size:
+                        valid_batch = False
+                        break
+                    if not all(isinstance(item, str) for item in sub_array):
+                        valid_batch = False
+                        break
+                
+                if valid_batch:
+                    self.logger.debug(f"Direct batch JSON parse successful (attempt {attempt + 1})")
+                    return data
+        except json.JSONDecodeError:
+            pass
+        
+        # Step 2: Try to extract nested array pattern
+        batch_candidates = self._extract_batch_json_candidates(response_text)
+        for candidate in batch_candidates:
+            try:
+                data = json.loads(candidate)
+                if isinstance(data, list) and len(data) == batch_count:
+                    # Validate structure
+                    valid_batch = True
+                    for i, (sub_array, expected_size) in enumerate(zip(data, batch_sizes)):
+                        if not isinstance(sub_array, list) or len(sub_array) != expected_size:
+                            valid_batch = False
+                            break
+                        if not all(isinstance(item, str) for item in sub_array):
+                            valid_batch = False
+                            break
+                    
+                    if valid_batch:
+                        self.logger.debug(f"Pattern extraction batch parse successful (attempt {attempt + 1})")
+                        return data
+            except json.JSONDecodeError:
+                continue
+        
+        # Step 3: Try to parse as a flat array and split it
+        flat_speakers = self.bulletproof_json_parse(response_text, total_expected, attempt)
+        if flat_speakers and len(flat_speakers) == total_expected:
+            # Split the flat array into batches
+            batches = []
+            start_idx = 0
+            for batch_size in batch_sizes:
+                end_idx = start_idx + batch_size
+                batches.append(flat_speakers[start_idx:end_idx])
+                start_idx = end_idx
+            
+            self.logger.debug(f"Flat array split into batches successful (attempt {attempt + 1})")
+            return batches
+        
+        # Step 4: Try to extract individual arrays from text
+        array_candidates = self.extract_json_candidates(response_text)
+        if len(array_candidates) == batch_count:
+            batches = []
+            for i, (candidate, expected_size) in enumerate(zip(array_candidates, batch_sizes)):
+                try:
+                    sub_array = json.loads(candidate)
+                    if isinstance(sub_array, list) and len(sub_array) == expected_size:
+                        if all(isinstance(item, str) for item in sub_array):
+                            batches.append(sub_array)
+                        else:
+                            break
+                    else:
+                        break
+                except json.JSONDecodeError:
+                    break
+            
+            if len(batches) == batch_count:
+                self.logger.debug(f"Individual array extraction successful (attempt {attempt + 1})")
+                return batches
+        
+        self.logger.warning(f"Batch parsing failed (attempt {attempt + 1})")
+        return None
+    
+    def _extract_batch_json_candidates(self, text: str) -> List[str]:
+        """
+        Extract potential nested JSON arrays from text for batch processing.
+        """
+        candidates = []
+        
+        # Pattern 1: Look for nested array patterns
+        nested_patterns = [
+            r'\[\s*\[.*?\]\s*(?:,\s*\[.*?\]\s*)*\]',  # [[...], [...], [...]]
+            r'\[\s*\[(?:[^\[\]]*(?:"[^"]*"[^\[\]]*)*)*\](?:\s*,\s*\[(?:[^\[\]]*(?:"[^"]*"[^\[\]]*)*)*\])*\s*\]',  # More complex nested
+        ]
+        
+        for pattern in nested_patterns:
+            matches = re.findall(pattern, text, re.DOTALL)
+            candidates.extend(matches)
+        
+        # Pattern 2: Look for batch structures in code blocks
+        code_block_patterns = [
+            r'```(?:json)?\s*(\[\s*\[.*?\]\s*(?:,\s*\[.*?\]\s*)*\])\s*```',
+            r'`(\[\s*\[.*?\]\s*(?:,\s*\[.*?\]\s*)*\])`',
+        ]
+        
+        for pattern in code_block_patterns:
+            matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
+            candidates.extend(matches)
+        
+        # Pattern 3: Look for explicit batch format indicators
+        batch_format_patterns = [
+            r'BATCH.*?(\[\s*\[.*?\]\s*(?:,\s*\[.*?\]\s*)*\])',
+            r'RESULT.*?(\[\s*\[.*?\]\s*(?:,\s*\[.*?\]\s*)*\])',
+        ]
+        
+        for pattern in batch_format_patterns:
+            matches = re.findall(pattern, text, re.DOTALL | re.IGNORECASE)
+            candidates.extend(matches)
+        
+        return candidates

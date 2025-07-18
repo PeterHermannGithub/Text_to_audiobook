@@ -9,6 +9,7 @@ mobi==0.3
 beautifulsoup4==4.12.3
 
 requests==2.32.3
+aiohttp==3.9.1
 tqdm==4.66.4
 tenacity==8.2.3
 fuzzywuzzy==0.18.0

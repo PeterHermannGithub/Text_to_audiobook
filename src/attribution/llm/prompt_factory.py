@@ -490,3 +490,112 @@ Response format: ["speaker1", "speaker2", "speaker3"]"""
 {task_block.strip()}
 
 Format: ["name1", "name2", "name3"]"""
+
+    def create_batch_classification_prompt(self, batch_numbered_lines, text_metadata=None, context_hint=None):
+        """
+        Creates a batch processing prompt for multiple segments in a single request.
+        
+        This method creates a prompt that can handle multiple segments simultaneously,
+        significantly reducing API call overhead for large documents.
+        
+        Args:
+            batch_numbered_lines: List of lists, where each inner list contains lines for one segment
+            text_metadata: Optional metadata for context
+            context_hint: Optional context hint for processing
+            
+        Returns:
+            String prompt for batch speaker classification
+        """
+        if not batch_numbered_lines:
+            return ""
+        
+        # Calculate total lines and batch information
+        total_lines = sum(len(lines) for lines in batch_numbered_lines)
+        batch_count = len(batch_numbered_lines)
+        batch_sizes = [len(lines) for lines in batch_numbered_lines]
+        
+        # Extract POV information for narrative style rules
+        pov_analysis = text_metadata.get('pov_analysis', {}) if text_metadata else {}
+        pov_type = pov_analysis.get('type', 'UNKNOWN')
+        narrator_id = pov_analysis.get('narrator_identifier', 'narrator')
+        
+        # Build dynamic POV rules
+        pov_rules = self._build_dynamic_pov_rules(pov_type, narrator_id)
+        
+        # Extract character information
+        character_profiles = text_metadata.get('character_profiles', []) if text_metadata else []
+        character_list = self._build_character_list_for_pov(character_profiles, pov_type, narrator_id)
+        
+        # Build context block
+        context_block = ""
+        if context_hint:
+            rolling_context = self._build_rolling_context_section(context_hint)
+            if rolling_context:
+                context_block = f"\n\n---CONTEXT BLOCK (Previous text for context)---\n{rolling_context.strip()}"
+        
+        # Build batch task blocks
+        batch_blocks = []
+        for batch_idx, lines in enumerate(batch_numbered_lines):
+            batch_block = f"BATCH {batch_idx + 1} ({len(lines)} lines):\n"
+            for line_idx, line in enumerate(lines, 1):
+                batch_block += f"{line_idx}. {line}\n"
+            batch_blocks.append(batch_block.strip())
+        
+        # Create batch format explanation
+        batch_format_example = []
+        for batch_idx in range(batch_count):
+            batch_size = batch_sizes[batch_idx]
+            example_speakers = [f"speaker{i+1}" for i in range(min(batch_size, 3))]
+            if batch_size > 3:
+                example_speakers.append("...")
+            batch_format_example.append(f"  [{', '.join(f'"{s}"' for s in example_speakers)}]")
+        
+        format_example = "[\n" + ",\n".join(batch_format_example) + "\n]"
+        
+        return f"""BATCH TASK: For each numbered line in each batch, identify the speaker.
+
+NARRATIVE STYLE: {pov_rules}
+
+CHARACTERS:
+{character_list}{context_block}
+
+---BATCH TASK BLOCKS (Process all {batch_count} batches)---
+{chr(10).join(batch_blocks)}
+
+Your response MUST be a single, valid JSON array containing {batch_count} sub-arrays, each with exactly the right number of speakers:
+
+FORMAT EXAMPLE:
+{format_example}
+
+CRITICAL: Return exactly {batch_count} sub-arrays with sizes {batch_sizes} respectively."""
+
+    def create_simple_batch_classification_prompt(self, batch_numbered_lines):
+        """
+        Creates a simplified batch processing prompt for fallback scenarios.
+        
+        Args:
+            batch_numbered_lines: List of lists, where each inner list contains lines for one segment
+            
+        Returns:
+            String prompt for simple batch speaker classification
+        """
+        if not batch_numbered_lines:
+            return ""
+        
+        batch_count = len(batch_numbered_lines)
+        batch_sizes = [len(lines) for lines in batch_numbered_lines]
+        
+        # Build simple batch blocks
+        batch_blocks = []
+        for batch_idx, lines in enumerate(batch_numbered_lines):
+            batch_block = f"BATCH {batch_idx + 1}:\n"
+            for line_idx, line in enumerate(lines, 1):
+                batch_block += f"{line_idx}. {line}\n"
+            batch_blocks.append(batch_block.strip())
+        
+        return f"""For each line in each batch, identify the speaker.
+
+{chr(10).join(batch_blocks)}
+
+Return exactly {batch_count} arrays with sizes {batch_sizes}.
+Format: [["speaker1", "speaker2"], ["speaker3", "speaker4"]]"""
