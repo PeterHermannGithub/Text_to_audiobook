@@ -10,6 +10,187 @@ GCP_LLM_MODEL = "gemini-1.0-pro"
 DEFAULT_LLM_ENGINE = "local"
 GCP_LOCATION = "us-central1"
 
+# Multi-Model Load Balancing Configuration (Phase 3.2: Multi-Model Load Balancing)
+MULTI_MODEL_ENABLED = True  # Enable multi-model load balancing system
+MULTI_MODEL_FALLBACK_ENABLED = True  # Enable fallback between models on failure
+
+# Model Capability Definitions - Used for intelligent routing decisions
+MODEL_CAPABILITIES = {
+    # Local Models (Ollama)
+    "deepseek-v2:16b": {
+        "engine": "local",
+        "provider": "ollama",
+        "speed_tier": "fast",        # fast, medium, slow
+        "quality_tier": "high",      # high, medium, basic
+        "cost_tier": "free",         # free, low, medium, high
+        "max_context_length": 32768,
+        "supports_json": True,
+        "optimal_use_cases": ["complex_reasoning", "coding", "analysis"],
+        "cost_per_1k_tokens": 0.0,   # Free for local models
+        "avg_response_time_ms": 1500,
+        "reliability_score": 0.95
+    },
+    "llama3:8b": {
+        "engine": "local",
+        "provider": "ollama", 
+        "speed_tier": "fast",
+        "quality_tier": "medium",
+        "cost_tier": "free",
+        "max_context_length": 8192,
+        "supports_json": True,
+        "optimal_use_cases": ["general_chat", "simple_reasoning"],
+        "cost_per_1k_tokens": 0.0,
+        "avg_response_time_ms": 800,
+        "reliability_score": 0.92
+    },
+    "mistral:7b": {
+        "engine": "local",
+        "provider": "ollama",
+        "speed_tier": "medium", 
+        "quality_tier": "medium",
+        "cost_tier": "free",
+        "max_context_length": 32768,
+        "supports_json": True,
+        "optimal_use_cases": ["classification", "extraction"],
+        "cost_per_1k_tokens": 0.0,
+        "avg_response_time_ms": 1200,
+        "reliability_score": 0.90
+    },
+    # Cloud Models (Google Cloud)
+    "gemini-1.0-pro": {
+        "engine": "gcp",
+        "provider": "google_cloud",
+        "speed_tier": "medium",
+        "quality_tier": "high", 
+        "cost_tier": "medium",
+        "max_context_length": 30720,
+        "supports_json": True,
+        "optimal_use_cases": ["complex_reasoning", "analysis", "creative_writing"],
+        "cost_per_1k_tokens": 0.002,
+        "avg_response_time_ms": 2000,
+        "reliability_score": 0.98
+    },
+    "gemini-1.5-flash": {
+        "engine": "gcp",
+        "provider": "google_cloud",
+        "speed_tier": "fast",
+        "quality_tier": "medium",
+        "cost_tier": "low",
+        "max_context_length": 1000000,
+        "supports_json": True,
+        "optimal_use_cases": ["simple_classification", "batch_processing"],
+        "cost_per_1k_tokens": 0.0005,
+        "avg_response_time_ms": 800,
+        "reliability_score": 0.96
+    }
+}
+
+# Multi-Model Pool Configurations - Define different pools for different use cases
+MULTI_MODEL_POOLS = {
+    # Primary pool for high-quality reasoning tasks
+    "primary": {
+        "models": ["deepseek-v2:16b", "gemini-1.0-pro"],
+        "routing_strategy": "quality_first",     # quality_first, speed_first, cost_first, balanced
+        "failover_enabled": True,
+        "max_instances_per_model": 3,
+        "health_check_interval": 30,
+        "load_balancing_algorithm": "weighted_round_robin",  # round_robin, weighted_round_robin, least_connections
+        "cost_budget_per_hour": 10.0,  # USD budget limit per hour for cloud models
+        "preferred_local_ratio": 0.8   # Prefer local models 80% of the time for cost optimization
+    },
+    
+    # Fast pool for simple classification tasks  
+    "fast": {
+        "models": ["llama3:8b", "mistral:7b", "gemini-1.5-flash"],
+        "routing_strategy": "speed_first",
+        "failover_enabled": True,
+        "max_instances_per_model": 2,
+        "health_check_interval": 60,
+        "load_balancing_algorithm": "round_robin", 
+        "cost_budget_per_hour": 5.0,
+        "preferred_local_ratio": 0.9   # Prefer local models 90% of the time for speed/cost
+    },
+    
+    # Fallback pool for reliability
+    "fallback": {
+        "models": ["mistral:7b", "gemini-1.0-pro"],
+        "routing_strategy": "balanced",
+        "failover_enabled": False,  # This is the fallback pool
+        "max_instances_per_model": 1,
+        "health_check_interval": 120,
+        "load_balancing_algorithm": "least_connections",
+        "cost_budget_per_hour": 15.0,
+        "preferred_local_ratio": 0.5   # Balanced local/cloud for reliability
+    }
+}
+
+# Request Complexity Classification - Used for intelligent pool selection
+REQUEST_COMPLEXITY_ROUTING = {
+    "simple": {
+        "preferred_pools": ["fast", "primary"],
+        "max_context_length": 2000,
+        "timeout_seconds": 30,
+        "examples": ["single_line_classification", "yes_no_questions", "simple_extraction"]
+    },
+    "medium": {
+        "preferred_pools": ["primary", "fast"], 
+        "max_context_length": 8000,
+        "timeout_seconds": 60,
+        "examples": ["multi_line_classification", "speaker_attribution", "content_analysis"]
+    },
+    "complex": {
+        "preferred_pools": ["primary", "fallback"],
+        "max_context_length": 20000, 
+        "timeout_seconds": 120,
+        "examples": ["deep_reasoning", "complex_analysis", "creative_tasks"]
+    },
+    "batch": {
+        "preferred_pools": ["fast", "primary"],
+        "max_context_length": 50000,
+        "timeout_seconds": 300,
+        "examples": ["batch_classification", "bulk_processing", "document_analysis"]
+    }
+}
+
+# Model-Specific Performance Tuning
+MODEL_PERFORMANCE_CONFIG = {
+    # Timeout configurations per model type
+    "timeouts": {
+        "local_fast": {"connection": 10, "read": 60, "total": 120},
+        "local_medium": {"connection": 15, "read": 90, "total": 180}, 
+        "cloud_fast": {"connection": 20, "read": 120, "total": 240},
+        "cloud_medium": {"connection": 30, "read": 180, "total": 300}
+    },
+    
+    # Retry configurations per model type
+    "retries": {
+        "local": {"max_attempts": 3, "backoff_factor": 1.0, "max_delay": 10},
+        "cloud": {"max_attempts": 5, "backoff_factor": 2.0, "max_delay": 30}
+    },
+    
+    # Load thresholds for different model tiers
+    "load_thresholds": {
+        "fast": {"max_concurrent": 10, "queue_limit": 20},
+        "medium": {"max_concurrent": 6, "queue_limit": 12}, 
+        "slow": {"max_concurrent": 3, "queue_limit": 6}
+    }
+}
+
+# Cost Management Configuration
+COST_MANAGEMENT = {
+    "enabled": True,
+    "daily_budget_usd": 50.0,       # Maximum daily spend on cloud models
+    "cost_alerts": {
+        "warning_threshold": 0.7,    # Alert at 70% of budget
+        "critical_threshold": 0.9    # Critical alert at 90% of budget
+    },
+    "cost_optimization": {
+        "prefer_local_under_load": True,   # Switch to local models when cloud usage is high
+        "dynamic_routing_enabled": True,   # Enable cost-aware routing decisions
+        "budget_tracking_window": "daily"  # daily, hourly, weekly
+    }
+}
+
 # Chunking Parameters
 CHUNK_SIZE = 2500
 OVERLAP_SIZE = 500
