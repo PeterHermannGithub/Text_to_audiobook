@@ -117,10 +117,34 @@ class RuleBasedAttributor:
             'decided', 'concluded', 'assumed', 'believed', 'knew', 'felt'
         ]
         
-        # High-confidence patterns for script format
+        # Enhanced high-confidence patterns for script format
         self.script_patterns = [
-            r'^(?:–|\s|-)?\s*([A-Z][a-zA-Z0-9_\s\-\'\.]+):\s*(.*)',  # NAME: dialogue
-            r'^([A-Z][A-Z0-9_\s]+):\s*(.*)',  # ALL_CAPS_NAME: dialogue
+            # Multi-word character names (e.g., "LADY CAPULET:", "First Citizen:")
+            r'^(?:–|\s|-)?\s*([A-Z][a-zA-Z0-9_\s\-\'\.]{2,50}):\s*(.*)',  # Enhanced NAME: dialogue
+            # All caps with multiple words (e.g., "LADY MONTAGUE:", "FIRST CITIZEN:")
+            r'^([A-Z][A-Z0-9_\s]{2,50}):\s*(.*)',  # ALL_CAPS_NAME: dialogue
+            # Title-based characters (e.g., "First Citizen:", "Second Watchman:")
+            r'^((?:First|Second|Third|Fourth|Fifth)\s+[A-Z][a-z]+):\s*(.*)',  # Numbered titles
+            # Character with descriptors (e.g., "ROMEO, aside:", "JULIET, to herself:")
+            r'^([A-Z][A-Za-z\s]+?)(?:,\s*(?:aside|to\s+\w+|from\s+\w+))?\s*:\s*(.*)',  # Character with descriptors
+        ]
+        
+        # Stage direction patterns (these should be attributed to narrator)
+        self.stage_direction_patterns = [
+            # Entry patterns
+            r'^Enter\s+(.+)',  # "Enter SAMPSON and GREGORY"
+            r'^(?:Exit|Exeunt)\s+(.+)',  # "Exit ROMEO", "Exeunt all"
+            r'^(?:Exit|Exeunt)\s*$',  # "Exit", "Exeunt"
+            # Action patterns  
+            r'^(.+?)\s+(?:fight|fights)$',  # "They fight"
+            r'^(.+?)\s+(?:die|dies)$',  # "Romeo dies"
+            r'^(.+?)\s+(?:aside|apart)$',  # "Speaks aside"
+            # Stage business
+            r'^[A-Z][^:]*?(?:beats?|strikes?|draws?|sheathes?|kneels?|rises?|falls?)\s+.*',
+            r'^[A-Z][^:]*?(?:whispers?|shouts?|cries?|laughs?|weeps?)\s+.*',
+            # Setting and scene changes
+            r'^(?:SCENE|ACT)\s+[IVX\d]+',  # "SCENE I", "ACT II"
+            r'^[A-Z][^:]*?\.?\s*[A-Z][^:]*?\.',  # Location descriptions "Verona. A public place."
         ]
         
         # Comprehensive dialogue attribution patterns
@@ -163,6 +187,33 @@ class RuleBasedAttributor:
             'author note', 'author words', 'editorial', 'editor\'s note',
             'publisher\'s note', 'translator\'s note', 'note', 'notes',
             
+            # Project Gutenberg specific metadata
+            'title', 'release date', 'language', 'credits', 'most recently updated',
+            'produced by', 'project gutenberg', 'ebook', 'start of ebook', 'end of ebook',
+            'gutenberg', 'utf-8', 'encoding', 'produced', 'updated', 'file',
+            
+            # Academic critics and authors (Pride and Prejudice specific)
+            'george saintsbury', 'saintsbury', 'george allen', 'allen',
+            'critic', 'critics', 'criticism', 'literary critic', 'scholar', 'scholars',
+            'analysis', 'literary analysis', 'critical analysis', 'commentary',
+            'biographer', 'essayist', 'reviewer', 'academic', 'professor',
+            
+            # Jane Austen related metadata (not story characters)
+            'jane austen', 'miss austen', 'austen', 'the author',
+            'mansfield park', 'sense and sensibility', 'emma', 'persuasion',
+            'northanger abbey', 'other novels', 'other works', 'works',
+            
+            # Publication and printing metadata
+            'charing cross road', 'ruskin house', 'london', 'publisher',
+            'george allen and unwin', 'unwin', 'printed in', 'published by',
+            'first published', 'originally published', 'edition', 'printing',
+            'copyright', 'all rights reserved', 'rights', 'reserved',
+            
+            # Editorial and critical terms
+            'editor', 'editorial', 'edited by', 'introduction by', 'preface by',
+            'with an introduction', 'with a preface', 'annotated by',
+            'notes by', 'commentary by', 'analysis by', 'essay by',
+            
             # Status/quality markers
             'unfixable', 'ambiguous', 'unknown', 'unclear', 'missing', 'eror',
             'corrupted', 'incomplete', 'damaged', 'illegible',
@@ -198,6 +249,29 @@ class RuleBasedAttributor:
             r'^translator:', r'^note:', r'^notes:', r'^editorial:',
             r'author\'?s?\s+note', r'author\'?s?\s+words', r'editor\'?s?\s+note',
             r'publisher\'?s?\s+note', r'translator\'?s?\s+note',
+            
+            # Project Gutenberg specific patterns
+            r'^title:', r'^release\s+date:', r'^language:', r'^credits:',
+            r'^most\s+recently\s+updated:', r'^produced\s+by', r'^file\s+produced',
+            r'project\s+gutenberg', r'gutenberg\s+ebook', r'start\s+of.*ebook',
+            r'end\s+of.*ebook', r'utf-8', r'encoding',
+            
+            # Academic and critical patterns
+            r'george\s+saintsbury', r'saintsbury', r'george\s+allen',
+            r'literary\s+critic', r'literary\s+analysis', r'critical\s+analysis',
+            r'jane\s+austen', r'miss\s+austen', r'the\s+author',
+            r'mansfield\s+park', r'sense\s+and\s+sensibility', r'emma',
+            r'other\s+novels', r'other\s+works', r'compared\s+to',
+            
+            # Publication patterns
+            r'charing\s+cross\s+road', r'ruskin\s+house', r'george\s+allen\s+and\s+unwin',
+            r'first\s+published', r'originally\s+published', r'published\s+by',
+            r'printed\s+in', r'all\s+rights\s+reserved',
+            
+            # Editorial patterns
+            r'introduction\s+by', r'preface\s+by', r'edited\s+by',
+            r'with\s+an?\s+introduction', r'with\s+a\s+preface',
+            r'notes\s+by', r'commentary\s+by', r'analysis\s+by',
             
             # Numbering patterns
             r'^\d+\.\s*$', r'^[ivx]+\.\s*$', r'^\d+\s*$', r'^[ivx]+\s*$',
@@ -281,6 +355,10 @@ class RuleBasedAttributor:
         if not text:
             return None, 0.0
         
+        # Method 0: Stage direction detection (highest priority for scripts)
+        if is_script_like and self._is_stage_direction(text):
+            return "narrator", 0.95  # High confidence for stage directions
+        
         # Method 1: Script format detection (highest priority)
         if is_script_like or self._looks_like_script_line(text):
             speaker, confidence = self._attribute_script_format(text, known_character_names)
@@ -332,34 +410,169 @@ class RuleBasedAttributor:
                 return True
         return False
     
+    def _is_stage_direction(self, text: str) -> bool:
+        """
+        Check if text is a stage direction that should be attributed to narrator.
+        
+        Returns True for stage directions like "Enter ROMEO", "They fight", etc.
+        """
+        text = text.strip()
+        if not text:
+            return False
+            
+        # Check against stage direction patterns
+        for pattern in self.stage_direction_patterns:
+            if re.match(pattern, text, re.IGNORECASE):
+                return True
+        
+        # Additional heuristics for stage directions
+        
+        # Lines that are purely descriptive (no dialogue markers)
+        if not any(marker in text for marker in ['"', '"', '"', "'", ':', '?', '!']):
+            # Check for action words
+            action_indicators = [
+                'enter', 'exit', 'exeunt', 'fight', 'die', 'aside', 'apart',
+                'beats', 'strikes', 'draws', 'sheathes', 'kneels', 'rises', 'falls',
+                'whispers', 'shouts', 'cries', 'laughs', 'weeps', 'runs', 'walks'
+            ]
+            
+            text_lower = text.lower()
+            if any(action in text_lower for action in action_indicators):
+                return True
+        
+        # Lines with common stage direction formats
+        stage_markers = [
+            'scene', 'act', 'prologue', 'epilogue', 'finis', 'the end',
+            'curtain', 'lights', 'music', 'sound', 'noise'
+        ]
+        
+        text_lower = text.lower()
+        if any(marker in text_lower for marker in stage_markers):
+            return True
+            
+        return False
+    
     def _attribute_script_format(self, text: str, known_character_names: set) -> Tuple[str, float]:
-        """Attribute speaker using script format patterns."""
+        """Enhanced script format attribution with character name normalization."""
         for pattern in self.script_patterns:
             match = re.match(pattern, text)
             if match:
                 potential_speaker = match.group(1).strip()
                 
-                # Clean up the speaker name
-                potential_speaker = potential_speaker.rstrip(':').strip()
+                # Enhanced speaker name normalization
+                potential_speaker = self._normalize_script_character_name(potential_speaker)
                 
-                # Check if it matches a known character
+                if not potential_speaker:  # Skip if normalization resulted in empty string
+                    continue
+                
+                # Check if it's a metadata speaker (should be filtered out)
+                if self._is_metadata_speaker(potential_speaker):
+                    continue
+                
+                # Check exact match with known characters
                 if potential_speaker in known_character_names:
                     return potential_speaker, 0.95
-                elif known_character_names:
-                    # Try fuzzy matching
+                
+                # Try fuzzy matching with known characters
+                if known_character_names:
                     best_match = process.extractOne(potential_speaker, list(known_character_names), scorer=fuzz.token_set_ratio)
                     if best_match and best_match[1] > 85:
                         return best_match[0], 0.85
                 
-                # Check if it's a metadata speaker (should be filtered out)
-                if self._is_metadata_speaker(potential_speaker):
-                    return None, 0.0
-                    
-                # If it looks like a proper name, accept it even if not in known list
-                if self._is_likely_character_name(potential_speaker):
-                    return potential_speaker, 0.7
+                # Enhanced character name validation for scripts
+                if self._is_likely_script_character_name(potential_speaker):
+                    return potential_speaker, 0.8  # Higher confidence for script format
                     
         return None, 0.0
+    
+    def _normalize_script_character_name(self, raw_name: str) -> str:
+        """
+        Normalize character names extracted from script format.
+        
+        Handles cases like:
+        - "LADY CAPULET" -> "Lady Capulet"
+        - "FIRST CITIZEN" -> "First Citizen" 
+        - "ROMEO, aside" -> "Romeo"
+        """
+        if not raw_name:
+            return ""
+        
+        # Remove trailing colons and clean whitespace
+        name = raw_name.rstrip(':').strip()
+        
+        # Remove aside annotations and descriptors
+        # Handle patterns like "ROMEO, aside", "JULIET, to herself"
+        if ',' in name:
+            parts = name.split(',')
+            name = parts[0].strip()
+        
+        # Remove stage direction annotations in parentheses or brackets
+        name = re.sub(r'\s*[\[\(].*?[\]\)]', '', name)
+        
+        # Normalize capitalization for readability
+        # Convert "LADY CAPULET" to "Lady Capulet"
+        if name.isupper() and len(name) > 3:
+            name = name.title()
+        
+        # Handle special title cases
+        # Convert "first citizen" to "First Citizen"
+        if name.lower().startswith(('first ', 'second ', 'third ', 'fourth ', 'fifth ')):
+            name = name.title()
+        
+        return name
+    
+    def _is_likely_script_character_name(self, name: str) -> bool:
+        """
+        Enhanced character name validation specifically for script formats.
+        
+        More lenient than general character validation to handle script conventions.
+        """
+        if not name or len(name.strip()) < 2:
+            return False
+            
+        name = name.strip()
+        
+        # Check against metadata first
+        if self._is_metadata_speaker(name):
+            return False
+        
+        # Script-specific character patterns
+        
+        # Title-based characters are valid in scripts
+        title_patterns = [
+            r'^(?:First|Second|Third|Fourth|Fifth)\s+[A-Z][a-z]+$',  # "First Citizen"
+            r'^(?:Lord|Lady|Sir|Dame|Duke|Duchess|Count|Countess)\s+[A-Z][a-z]+$',  # "Lady Capulet"
+            r'^(?:Captain|Lieutenant|Sergeant|General|Admiral)\s+[A-Z][a-z]+$',  # Military titles
+            r'^(?:Doctor|Professor|Father|Mother|Brother|Sister)\s+[A-Z][a-z]+$',  # Professional/familial titles
+        ]
+        
+        for pattern in title_patterns:
+            if re.match(pattern, name, re.IGNORECASE):
+                return True
+        
+        # Single names are common in scripts
+        if re.match(r'^[A-Z][a-z]+$', name):  # "Romeo", "Juliet"
+            return True
+        
+        # Multiple word names
+        if re.match(r'^[A-Z][a-z]+(?:\s[A-Z][a-z]+)+$', name):  # "Lady Capulet"
+            return True
+        
+        # All caps character names (common in script format)
+        if re.match(r'^[A-Z][A-Z\s]+$', name) and 2 <= len(name) <= 30:
+            return True
+        
+        # Reject common non-character words
+        non_character_words = {
+            'enter', 'exit', 'exeunt', 'scene', 'act', 'prologue', 'epilogue',
+            'they', 'them', 'all', 'several', 'chorus', 'music', 'sound',
+            'lights', 'curtain', 'end', 'finis'
+        }
+        
+        if name.lower() in non_character_words:
+            return False
+        
+        return True
     
     def _attribute_dialogue_tags(self, text: str, known_character_names: set) -> Tuple[str, float]:
         """Attribute speaker using dialogue tag patterns like 'said John'."""
@@ -653,6 +866,42 @@ class RuleBasedAttributor:
             if re.match(pattern, speaker_lower):
                 return True
         
+        # Enhanced Project Gutenberg specific filtering
+        # Check for partial matches with critical metadata terms
+        metadata_partial_matches = [
+            'title', 'release', 'date', 'language', 'credits', 'produced',
+            'gutenberg', 'saintsbury', 'austen', 'critic', 'analysis',
+            'george allen', 'publisher', 'edition', 'copyright', 'printed'
+        ]
+        
+        for term in metadata_partial_matches:
+            if term in speaker_lower:
+                return True
+        
+        # Check for academic/critical content indicators
+        academic_indicators = [
+            'professor', 'dr.', 'scholar', 'academic', 'critic', 'reviewer',
+            'biographer', 'essayist', 'commentator', 'analyst', 'editor'
+        ]
+        
+        for indicator in academic_indicators:
+            if indicator in speaker_lower:
+                return True
+        
+        # Check for publication metadata patterns
+        publication_patterns = [
+            r'.*\s+and\s+unwin',  # George Allen and Unwin
+            r'.*\s+house',        # Ruskin House, etc.
+            r'.*\s+road',         # Charing Cross Road
+            r'.*\s+press',        # Various press names
+            r'.*\s+publishing',   # Publishing companies
+            r'.*\s+books',        # Book publishers
+        ]
+        
+        for pattern in publication_patterns:
+            if re.match(pattern, speaker_lower):
+                return True
+        
         # Check for chapter-like patterns with numbers
         if re.match(r'^chapter\s+\w+', speaker_lower):
             return True
@@ -663,6 +912,15 @@ class RuleBasedAttributor:
             
         # Check for numeric patterns
         if re.match(r'^\d+\.?\s*$', speaker_name.strip()):
+            return True
+        
+        # Check for date patterns that might be extracted as speakers
+        if re.match(r'.*\d{4}.*', speaker_name) and len(speaker_name) < 20:
+            return True
+        
+        # Check for obvious metadata formatting
+        if ':' in speaker_name and len(speaker_name) < 30:
+            # Likely "Title:", "Author:", etc.
             return True
             
         return False

@@ -129,19 +129,50 @@ class TextPreprocessor:
         # Maintain backward compatibility
         metadata['potential_character_names'] = {profile.name for profile in character_profiles.values()}
 
-        # 5. Basic Script-like Format Detection
-        # Check for lines starting with capitalized words followed by a colon
+        # 5. Enhanced Script-like Format Detection
+        # Check for lines starting with character names followed by a colon
         script_line_count = 0
+        stage_direction_count = 0
         total_lines = 0
+        
+        # Enhanced patterns for script detection
+        script_patterns = [
+            r'^[A-Z][A-Z0-9_\s]{1,50}:\s*',  # All caps character names
+            r'^[A-Z][a-z]+(?:\s[A-Z][a-z]+)*:\s*',  # Title case multi-word names
+            r'^(?:First|Second|Third|Fourth|Fifth)\s+[A-Z][a-z]+:\s*',  # Numbered characters
+        ]
+        
+        stage_direction_patterns = [
+            r'^Enter\s+', r'^Exit\s+', r'^Exeunt\s*', 
+            r'^(?:ACT|SCENE)\s+[IVX\d]+', r'^PROLOGUE\s*$', r'^EPILOGUE\s*$'
+        ]
+        
         for line in text.split('\n'):
             line = line.strip()
             if line:
                 total_lines += 1
-                if re.match(r'^[A-Z][A-Z0-9_\s]*:\s*', line):
+                
+                # Check for script patterns
+                if any(re.match(pattern, line) for pattern in script_patterns):
                     script_line_count += 1
+                
+                # Check for stage directions
+                elif any(re.match(pattern, line, re.IGNORECASE) for pattern in stage_direction_patterns):
+                    stage_direction_count += 1
         
-        if total_lines > 10 and script_line_count / total_lines > 0.1: # More than 10% of lines look like script cues
-            metadata['is_script_like'] = True
+        # More sophisticated script detection
+        if total_lines > 10:
+            script_ratio = script_line_count / total_lines
+            stage_ratio = stage_direction_count / total_lines
+            
+            # Consider it script-like if:
+            # - More than 15% of lines are script format, OR
+            # - More than 8% script + stage directions combined, OR  
+            # - Significant number of both script and stage direction patterns
+            if (script_ratio > 0.15 or 
+                (script_ratio + stage_ratio) > 0.08 or
+                (script_line_count >= 5 and stage_direction_count >= 2)):
+                metadata['is_script_like'] = True
 
         return metadata
     
@@ -337,7 +368,22 @@ class TextPreprocessor:
             # Common demonstratives and articles
             'this', 'that', 'these', 'those', 'such', 'some', 'any', 'many', 'few',
             # Time/location words often capitalized
-            'now', 'then', 'today', 'tomorrow', 'yesterday', 'here', 'there'
+            'now', 'then', 'today', 'tomorrow', 'yesterday', 'here', 'there',
+            # Project Gutenberg metadata terms
+            'title', 'release date', 'language', 'credits', 'produced by',
+            'most recently updated', 'file', 'encoding', 'utf', 'project gutenberg',
+            'gutenberg', 'ebook', 'start', 'end', 'unfixable', 'ambiguous'
+        }
+        
+        # Project Gutenberg specific metadata entities  
+        pg_metadata_entities = {
+            'george saintsbury', 'saintsbury', 'george allen', 'allen',
+            'charing cross road', 'ruskin house', 'london', 'publisher',
+            'first published', 'originally published', 'printed in',
+            'copyright', 'all rights reserved', 'george allen and unwin',
+            'title', 'release date', 'author', 'language', 'credits',
+            'most recently updated', 'produced by', 'file produced',
+            'project gutenberg', 'gutenberg ebook', 'utf-8', 'encoding'
         }
         
         # Famous authors that might appear in literary texts
@@ -350,8 +396,10 @@ class TextPreprocessor:
             # Western literary authors
             'raymond carver', 'ernest hemingway', 'james joyce', 'virginia woolf',
             'william faulkner', 'john steinbeck', 'f scott fitzgerald', 'mark twain',
-            'charles dickens', 'jane austen', 'george orwell', 'aldous huxley',
+            'charles dickens', 'jane austen', 'miss austen', 'george orwell', 'aldous huxley',
             'margaret atwood', 'toni morrison', 'maya angelou', 'sylvia plath',
+            # Literary critics and scholars (especially for Jane Austen texts)
+            'george saintsbury', 'saintsbury', 'literary critic', 'critic', 'scholar',
             # Korean authors (expanded)
             'han kang', 'kim young ha', 'cho nam joo', 'bae suah', 'park min gyu',
             'shin kyung sook', 'park wan suh', 'yi mun yol', 'gong ji young',
@@ -377,6 +425,16 @@ class TextPreprocessor:
         
         if name_lower in non_names:
             return False
+        
+        # Check Project Gutenberg metadata entities
+        if name_lower in pg_metadata_entities:
+            return False
+        
+        # Check for partial matches with PG metadata (for variations)
+        for entity in pg_metadata_entities:
+            if entity in name_lower or name_lower in entity:
+                # Be more strict with PG metadata - any partial match is rejected
+                return False
         
         if name_lower in famous_authors:
             return False

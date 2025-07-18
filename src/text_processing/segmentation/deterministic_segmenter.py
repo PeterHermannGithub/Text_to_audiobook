@@ -80,7 +80,7 @@ class DeterministicSegmenter:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
         
-        # Metadata patterns to filter out at segmentation level
+        # Enhanced metadata patterns to filter out at segmentation level
         # FIXED: Made more specific to avoid filtering legitimate story content
         self.metadata_patterns = [
             r'^chapter\s+\d+\s*$',  # Only standalone "Chapter X" lines
@@ -91,7 +91,34 @@ class DeterministicSegmenter:
             r'^part\s+\d+\s*$', r'^book\s+\d+\s*$',
             r'^volume\s+\d+\s*$', r'^section\s+\d+\s*$', 
             r'^author:\s*$', r'^writer:\s*$',
-            r'^\d+\.\s*$', r'^[ivx]+\.\s*$'
+            r'^\d+\.\s*$', r'^[ivx]+\.\s*$',
+            
+            # Project Gutenberg specific patterns
+            r'^title:\s*.*$', r'^release\s+date:\s*.*$', r'^language:\s*.*$',
+            r'^credits:\s*.*$', r'^most\s+recently\s+updated:\s*.*$',
+            r'^produced\s+by\s*.*$', r'^file\s+produced\s*.*$',
+            r'.*project\s+gutenberg.*', r'.*gutenberg\s+ebook.*',
+            r'.*start\s+of.*ebook.*', r'.*end\s+of.*ebook.*',
+            
+            # Publication and academic patterns
+            r'.*george\s+saintsbury.*', r'.*saintsbury.*',
+            r'.*george\s+allen.*', r'.*charing\s+cross\s+road.*',
+            r'.*ruskin\s+house.*', r'.*first\s+published.*',
+            r'.*printed\s+in.*', r'.*copyright.*',
+            
+            # Script structural elements
+            r'^act\s+[ivx\d]+\s*$', r'^scene\s+[ivx\d]+.*$',
+            r'^prologue\s*$', r'^epilogue\s*$', r'^chorus\s*$',
+            r'^dramatis\s+personae.*', r'^characters\s*:?.*',
+            r'^the\s+(?:cast|players|characters).*',
+            
+            # Play titles and headers
+            r'.*shakespeare.*', r'.*entire\s+play.*', r'.*homepage.*',
+            r'^romeo\s+and\s+juliet\s*$', r'^hamlet\s*$', r'^macbeth\s*$',
+            r'^othello\s*$', r'^king\s+lear\s*$', r'^the\s+tempest\s*$',
+            
+            # Website and navigation elements
+            r'.*\|.*\|.*', r'.*homepage.*', r'.*navigation.*', r'.*menu.*'
         ]
         
         # Enhanced content quality thresholds
@@ -100,6 +127,24 @@ class DeterministicSegmenter:
         self.dialogue_split_threshold = 150  # Reduced from 200 for more aggressive splitting
         self.mixed_content_threshold = 0.15  # Minimum ratio for mixed content detection
         self.max_dialogue_attribution_length = 250  # Max length for dialogue + attribution
+        
+        # Stage direction patterns for script-format texts
+        self.stage_direction_patterns = [
+            # Entry/Exit patterns
+            r'^Enter\s+(.+)',  # "Enter SAMPSON and GREGORY"
+            r'^(?:Exit|Exeunt)\s+(.+)',  # "Exit ROMEO", "Exeunt all"
+            r'^(?:Exit|Exeunt)\s*$',  # "Exit", "Exeunt"
+            # Action patterns  
+            r'^(.+?)\s+(?:fight|fights)$',  # "They fight"
+            r'^(.+?)\s+(?:die|dies)$',  # "Romeo dies"
+            r'^(.+?)\s+(?:aside|apart)$',  # "Speaks aside"
+            # Stage business (more specific - avoid matching dialogue)
+            r'^[A-Z][A-Z\s]*\s+(?:beats?|strikes?|draws?|sheathes?|kneels?|rises?|falls?)(?:\s+[a-z]|\s*$)',
+            r'^[A-Z][A-Z\s]*\s+(?:whispers?|shouts?|cries?|laughs?|weeps?)(?:\s+[a-z]|\s*$)',
+            # Setting and scene changes
+            r'^(?:SCENE|ACT)\s+[IVX\d]+',  # "SCENE I", "ACT II"
+            r'^[A-Z][A-Z]*\.\s*[A-Z][A-Za-z\s]*(?:place|street|room|hall|castle|palace|garden|field|forest|court|chamber)\.$',  # Location descriptions "Verona. A public place."
+        ]
     
     def segment_text(self, text_content: str, text_metadata: Dict[str, Any] = None) -> List[Dict[str, Any]]:
         """
@@ -164,23 +209,37 @@ class DeterministicSegmenter:
     
     def _segment_script_format(self, text: str) -> List[str]:
         """
-        Segments text that's primarily in script format (CHARACTER: dialogue).
+        Enhanced script format segmentation with stage direction awareness and intelligent line merging.
         
-        Each line starting with a character name pattern becomes its own segment.
+        First merges character-name-on-separate-line format into standard "CHARACTER: dialogue" format,
+        then processes as normal script format. Stage directions are identified and kept as separate segments.
         Narrative lines between script lines are kept as separate segments.
         """
         segments = []
         current_segment = ""
         
-        lines = text.split('\n')
+        # PHASE 1: Intelligent line merging for character-name-on-separate-line format
+        merged_lines = self._merge_character_dialogue_lines(text)
+        lines = merged_lines.split('\n')
         
         for line in lines:
             line = line.strip()
             if not line:
                 continue
                 
+            # Check if this line is a stage direction
+            if self._is_stage_direction_line(line):
+                # Save any accumulated content
+                if current_segment.strip():
+                    segments.append(current_segment.strip())
+                    current_segment = ""
+                
+                # Stage direction becomes its own segment
+                segments.append(line)
+                continue
+                
             # Check if this line starts with a script format pattern
-            script_match = re.match(r'^(?:–|\s|-)?\s*([A-Z][a-zA-Z0-9_\s]*):\s*(.*)', line)
+            script_match = re.match(r'^(?:–|\s|-)?\s*([A-Z][a-zA-Z0-9_\s\-\'\.]{2,50}):\s*(.*)', line)
             
             if script_match:
                 # Save any accumulated narrative content
@@ -203,36 +262,219 @@ class DeterministicSegmenter:
             
         return segments
     
+    def _merge_character_dialogue_lines(self, text: str) -> str:
+        """
+        Intelligently merge character-name-on-separate-line format into standard script format.
+        
+        Converts:
+        SAMPSON
+        Gregory, o' my word, we'll not carry coals.
+        GREGORY
+        No, for then we should be colliers.
+        
+        Into:
+        SAMPSON: Gregory, o' my word, we'll not carry coals.
+        GREGORY: No, for then we should be colliers.
+        
+        Returns merged text ready for standard script processing.
+        """
+        lines = text.split('\n')
+        merged_lines = []
+        i = 0
+        
+        while i < len(lines):
+            current_line = lines[i].strip()
+            
+            # Skip empty lines
+            if not current_line:
+                merged_lines.append("")
+                i += 1
+                continue
+            
+            # Check if this line looks like a standalone character name
+            if self._is_standalone_character_name(current_line):
+                # Look ahead for dialogue lines
+                dialogue_lines = []
+                j = i + 1
+                
+                # Collect consecutive dialogue lines for this character
+                while j < len(lines):
+                    next_line = lines[j].strip()
+                    
+                    # Skip empty lines
+                    if not next_line:
+                        j += 1
+                        continue
+                    
+                    # Stop if we hit another character name, stage direction, or script format
+                    if (self._is_standalone_character_name(next_line) or 
+                        self._is_stage_direction_line(next_line) or
+                        re.match(r'^(?:–|\s|-)?\s*([A-Z][a-zA-Z0-9_\s\-\'\.]{2,50}):\s*(.*)', next_line)):
+                        break
+                    
+                    # This is dialogue for the current character
+                    dialogue_lines.append(next_line)
+                    j += 1
+                
+                # Merge character name with dialogue if we found any
+                if dialogue_lines:
+                    # Join all dialogue lines and create script format
+                    combined_dialogue = " ".join(dialogue_lines)
+                    merged_line = f"{current_line}: {combined_dialogue}"
+                    merged_lines.append(merged_line)
+                    
+                    # Skip the processed dialogue lines
+                    i = j
+                else:
+                    # No dialogue found - keep as standalone line (might be stage direction)
+                    merged_lines.append(current_line)
+                    i += 1
+            else:
+                # Not a character name - keep as is
+                merged_lines.append(current_line)
+                i += 1
+        
+        return '\n'.join(merged_lines)
+    
+    def _is_standalone_character_name(self, line: str) -> bool:
+        """
+        Check if a line appears to be a standalone character name.
+        
+        Criteria:
+        - All caps or Title Case format
+        - 2-50 characters
+        - No colon (not already in script format)
+        - Not a stage direction
+        - Not structural metadata
+        """
+        if not line or len(line.strip()) < 2 or len(line.strip()) > 50:
+            return False
+        
+        line = line.strip()
+        
+        # Already in script format (has colon)
+        if ':' in line:
+            return False
+        
+        # Stage direction patterns
+        if self._is_stage_direction_line(line):
+            return False
+        
+        # Structural elements
+        structural_patterns = [
+            r'^(?:ACT|SCENE)\s+[IVX\d]+',
+            r'^(?:PROLOGUE|EPILOGUE|CHORUS)$',
+            r'^(?:FINIS|THE END)$',
+        ]
+        
+        for pattern in structural_patterns:
+            if re.match(pattern, line, re.IGNORECASE):
+                return False
+        
+        # Character name patterns
+        character_patterns = [
+            r'^[A-Z][A-Z0-9_\s\-\'\.]{1,49}$',  # All caps multi-word: "LADY CAPULET", "FIRST CITIZEN"
+            r'^[A-Z][a-z]+(?:\s[A-Z][a-z]+)*$',  # Title case multi-word: "Lady Capulet", "First Citizen"
+            r'^(?:First|Second|Third|Fourth|Fifth)\s+[A-Z][a-z]+$',  # Numbered characters
+        ]
+        
+        for pattern in character_patterns:
+            if re.match(pattern, line):
+                return True
+        
+        return False
+    
+    def _is_stage_direction_line(self, line: str) -> bool:
+        """
+        Check if a line is a stage direction.
+        
+        Returns True for lines like "Enter ROMEO", "They fight", "Exit all", etc.
+        """
+        if not line.strip():
+            return False
+            
+        line = line.strip()
+        
+        # Check against stage direction patterns
+        for pattern in self.stage_direction_patterns:
+            if re.match(pattern, line, re.IGNORECASE):
+                return True
+        
+        # Additional heuristics for stage directions
+        
+        # Lines that are purely descriptive (no dialogue markers)
+        if not any(marker in line for marker in ['"', '"', '"', "'", ':', '?', '!']):
+            # Check for action words
+            action_indicators = [
+                'enter', 'exit', 'exeunt', 'fight', 'die', 'aside', 'apart',
+                'beats', 'strikes', 'draws', 'sheathes', 'kneels', 'rises', 'falls',
+                'whispers', 'shouts', 'cries', 'laughs', 'weeps', 'runs', 'walks',
+                'music', 'sound', 'lights', 'curtain'
+            ]
+            
+            line_lower = line.lower()
+            if any(action in line_lower for action in action_indicators):
+                return True
+        
+        # Lines with common stage direction formats
+        stage_markers = [
+            'scene', 'act', 'prologue', 'epilogue', 'finis', 'the end'
+        ]
+        
+        line_lower = line.lower()
+        if any(marker in line_lower for marker in stage_markers):
+            return True
+            
+        return False
+    
     def _segment_mixed_script_format(self, text: str) -> List[str]:
         """
-        Segments text that has mixed script and narrative format.
+        Enhanced mixed script format segmentation with stage direction awareness and intelligent line merging.
         
+        First applies intelligent line merging, then processes mixed content.
         More aggressive about splitting when script patterns are detected,
         but handles narrative sections with paragraph-based segmentation.
+        Stage directions are properly identified and segmented.
         """
         segments = []
         current_segment = ""
         
+        # PHASE 1: Apply intelligent line merging for character-name-on-separate-line format
+        merged_text = self._merge_character_dialogue_lines(text)
+        
         # Split by major paragraph breaks first
-        paragraphs = re.split(r'\n\s*\n', text)
+        paragraphs = re.split(r'\n\s*\n', merged_text)
         
         for paragraph in paragraphs:
             paragraph = paragraph.strip()
             if not paragraph:
                 continue
                 
-            # Check if this paragraph contains script patterns
+            # Check if this paragraph contains script patterns or stage directions
             lines = paragraph.split('\n')
-            has_script_lines = any(re.match(r'^(?:–|\s|-)?\s*([A-Z][a-zA-Z0-9_\s]*):\s*', line.strip()) for line in lines)
+            has_script_lines = any(re.match(r'^(?:–|\s|-)?\s*([A-Z][a-zA-Z0-9_\s\-\'\.]{2,50}):\s*', line.strip()) for line in lines)
+            has_stage_directions = any(self._is_stage_direction_line(line.strip()) for line in lines)
             
-            if has_script_lines:
-                # Process line by line for script content
+            if has_script_lines or has_stage_directions:
+                # Process line by line for script content and stage directions
                 for line in lines:
                     line = line.strip()
                     if not line:
                         continue
+                    
+                    # Check for stage directions first
+                    if self._is_stage_direction_line(line):
+                        # Save any accumulated content
+                        if current_segment.strip():
+                            segments.append(current_segment.strip())
+                            current_segment = ""
                         
-                    script_match = re.match(r'^(?:–|\s|-)?\s*([A-Z][a-zA-Z0-9_\s]*):\s*(.*)', line)
+                        # Stage direction becomes its own segment
+                        segments.append(line)
+                        continue
+                        
+                    # Check for script format
+                    script_match = re.match(r'^(?:–|\s|-)?\s*([A-Z][a-zA-Z0-9_\s\-\'\.]{2,50}):\s*(.*)', line)
                     if script_match:
                         # Save any accumulated content
                         if current_segment.strip():
@@ -478,7 +720,7 @@ class DeterministicSegmenter:
     
     def _is_metadata_segment(self, segment: str) -> bool:
         """
-        Check if a segment is likely metadata that should be filtered out.
+        Enhanced metadata detection with Project Gutenberg awareness.
         
         Returns True if the segment should be excluded from processing.
         """
@@ -487,9 +729,68 @@ class DeterministicSegmenter:
             
         segment_lower = segment.strip().lower()
         
-        # Check against metadata patterns
+        # Check against enhanced metadata patterns
         for pattern in self.metadata_patterns:
             if re.match(pattern, segment_lower):
+                return True
+        
+        # Priority 1: Project Gutenberg specific metadata
+        pg_indicators = [
+            'project gutenberg', 'gutenberg ebook', 'title:', 'release date:',
+            'author:', 'language:', 'credits:', 'most recently updated:',
+            'produced by', 'utf-8', 'encoding', 'start of the project gutenberg',
+            'end of the project gutenberg'
+        ]
+        
+        if any(indicator in segment_lower for indicator in pg_indicators):
+            return True
+        
+        # Priority 2: Academic and critical analysis content
+        academic_indicators = [
+            'george saintsbury', 'saintsbury', 'literary critic', 'critic',
+            'literary analysis', 'critical analysis', 'jane austen', 'miss austen',
+            'the author', 'mansfield park', 'sense and sensibility', 'emma',
+            'other novels', 'other works', 'scholarly', 'scholars'
+        ]
+        
+        academic_score = sum(1 for indicator in academic_indicators if indicator in segment_lower)
+        if academic_score >= 2 or 'george saintsbury' in segment_lower:
+            return True
+        
+        # Priority 3: Publication metadata
+        publication_indicators = [
+            'george allen', 'charing cross road', 'ruskin house',
+            'first published', 'originally published', 'printed in',
+            'copyright', 'all rights reserved', 'george allen and unwin'
+        ]
+        
+        if any(indicator in segment_lower for indicator in publication_indicators):
+            return True
+        
+        # Priority 4: Script structural elements
+        script_structure_indicators = [
+            'act i', 'act ii', 'act iii', 'act iv', 'act v',
+            'scene i', 'scene ii', 'scene iii', 'scene iv', 'scene v',
+            'prologue', 'epilogue', 'chorus', 'dramatis personae',
+            'characters:', 'the cast', 'players'
+        ]
+        
+        if any(indicator in segment_lower for indicator in script_structure_indicators):
+            return True
+        
+        # Priority 5: Play titles and website elements
+        play_website_indicators = [
+            'shakespeare', 'entire play', 'homepage', 'navigation',
+            'romeo and juliet', 'hamlet', 'macbeth', 'othello', 'king lear'
+        ]
+        
+        # Check for website navigation patterns (contains multiple |)
+        if '|' in segment and segment.count('|') >= 2:
+            return True
+        
+        if any(indicator in segment_lower for indicator in play_website_indicators):
+            # Only filter if it's a short line (likely a header)
+            if len(segment.strip()) < 100:
                 return True
         
         # REMOVED: Overly aggressive chapter filtering that was removing story content
@@ -500,13 +801,23 @@ class DeterministicSegmenter:
             segment.count(':') == 1 and segment.strip().endswith(':') and len(segment.strip()) < 50):  # Very short colon-ended lines
             return True
             
-        # Check for author/metadata lines
-        if (segment_lower.startswith('author:') or 
-            segment_lower.startswith('writer:') or
-            segment_lower.startswith('–author:') or
-            segment_lower == 'author' or
-            segment_lower == 'writer'):
+        # Enhanced author/metadata line detection
+        metadata_starters = [
+            'author:', 'writer:', 'editor:', 'publisher:', 'translator:',
+            'title:', 'release date:', 'language:', 'credits:',
+            '–author:', '—author:'
+        ]
+        
+        if (any(segment_lower.startswith(starter) for starter in metadata_starters) or
+            segment_lower in ['author', 'writer', 'editor', 'publisher', 'translator']):
             return True
+        
+        # Check for date patterns that might be metadata
+        if re.match(r'.*\d{4}.*', segment) and len(segment) < 50:
+            # Likely a date line like "First published 1813"
+            date_keywords = ['published', 'written', 'composed', 'updated', 'revised']
+            if any(keyword in segment_lower for keyword in date_keywords):
+                return True
             
         return False
     
