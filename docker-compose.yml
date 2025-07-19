@@ -10,12 +10,11 @@ services:
     depends_on:
       - redis
       - kafka
-      - spark-master
+      - spark
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - SPARK_MASTER=spark://spark-master:7077
+      - REDIS_URL=redis://redis:6379/0
+      - SPARK_MASTER=spark://spark:7077
       - OLLAMA_HOST=172.19.0.1
       - OLLAMA_URL=http://172.19.0.1:11434/api/generate
       - LOG_LEVEL=INFO
@@ -31,6 +30,12 @@ services:
     restart: unless-stopped
     stdin_open: true
     tty: true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   # Redis Cache Service
   redis:
@@ -94,7 +99,7 @@ services:
       retries: 3
 
   # Spark Master Service
-  spark-master:
+  spark:
     image: bitnami/spark:3.4.0
     container_name: text_to_audiobook_spark_master
     environment:
@@ -123,10 +128,10 @@ services:
     image: bitnami/spark:3.4.0
     container_name: text_to_audiobook_spark_worker
     depends_on:
-      - spark-master
+      - spark
     environment:
       - SPARK_MODE=worker
-      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_MASTER_URL=spark://spark:7077
       - SPARK_WORKER_MEMORY=2g
       - SPARK_WORKER_CORES=2
       - SPARK_RPC_AUTHENTICATION_ENABLED=no
@@ -165,6 +170,12 @@ services:
     networks:
       - text_to_audiobook_network
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   # Grafana Dashboard Service
   grafana:
@@ -184,6 +195,12 @@ services:
     networks:
       - text_to_audiobook_network
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   # Kafka UI (for development and monitoring)
   kafka-ui:
@@ -200,6 +217,12 @@ services:
     networks:
       - text_to_audiobook_network
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
 
 networks:
   text_to_audiobook_network:

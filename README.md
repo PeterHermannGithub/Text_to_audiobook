@@ -86,18 +86,42 @@ python app.py input/your_book.pdf --distributed --workers 4
 python app.py input/your_book.docx --engine gcp --model gemini-1.0-pro --project_id "your-project"
 ```
 
-### **Docker Deployment**
+### **Enterprise Docker Deployment**
+
+**🚀 Complete 6-Technology Stack**: Docker, Grafana, Prometheus, Kafka, Spark, Airflow
 
 ```bash
-# Build and run with Docker Compose
+# Start all services with service manager (recommended)
+./service_manager.sh start
+
+# Or use docker-compose directly  
 docker-compose up -d
 
-# Process a document
+# Validate all services are working
+./service_manager.sh validate
+
+# Process a document in distributed mode
 docker-compose exec app python app.py input/book.pdf --distributed
 
-# Monitor with Grafana (http://localhost:3000)
-docker-compose exec grafana grafana-cli admin reset-admin-password admin
+# Check service status
+./service_manager.sh status
 ```
+
+**🌐 Service Access URLs:**
+- **Application**: http://localhost:8000
+- **Grafana Dashboards**: http://localhost:3000 (admin/admin)
+- **Prometheus Metrics**: http://localhost:9090
+- **Kafka UI**: http://localhost:8082
+- **Spark Master UI**: http://localhost:8080
+- **Spark Worker UI**: http://localhost:8081
+- **Airflow Workflows**: http://localhost:8090
+
+**📊 Built-in Monitoring Dashboards:**
+- System Overview & Health Status
+- Kafka Message Queue Monitoring  
+- Spark Distributed Processing
+- LLM Performance & Load Balancing
+- Airflow Pipeline Orchestration
 
 ## 📋 **Processing Pipeline**
 
@@ -242,7 +266,23 @@ export GRAFANA_PORT=3000
 
 ## 🧪 **Testing**
 
-### **Run Test Suite**
+### **Service Integration Testing**
+
+```bash
+# Comprehensive service validation
+./service_manager.sh validate
+
+# Or run validation script directly
+python3 validate_services.py
+
+# Check service status
+./service_manager.sh status
+
+# View service logs
+./service_manager.sh logs [service_name]
+```
+
+### **Application Test Suite**
 
 ```bash
 # Run all tests
@@ -262,6 +302,7 @@ pytest tests/integration/test_distributed_pipeline.py -v
 
 ### **Test Categories**
 
+- **Service Integration**: Docker, Grafana, Prometheus, Kafka, Spark, Airflow validation
 - **Unit Tests**: Component-level validation
 - **Integration Tests**: End-to-end pipeline testing
 - **Performance Tests**: Load testing and benchmarking
@@ -450,7 +491,45 @@ docker-compose exec app pytest tests/
 
 ## 🚨 **Troubleshooting**
 
-### **Common Issues**
+### **Service Issues**
+
+**Docker Services Not Starting**
+```bash
+# Check Docker daemon
+docker info
+
+# View service logs
+./service_manager.sh logs [service_name]
+
+# Restart all services
+./service_manager.sh restart
+
+# Clean and rebuild
+./service_manager.sh clean
+docker-compose build
+```
+
+**Port Conflicts**
+```bash
+# Check port usage
+sudo netstat -tlnp | grep :8080
+
+# Services use these ports:
+# App: 8000, Spark Master: 8080, Kafka UI: 8082, Airflow: 8090
+# Grafana: 3000, Prometheus: 9090, Redis: 6379
+```
+
+**Service Health Check Failures**
+```bash
+# Run comprehensive validation
+./service_manager.sh validate
+
+# Check specific service health
+curl -f http://localhost:9090/-/healthy  # Prometheus
+curl -f http://localhost:3000/api/health # Grafana
+```
+
+### **Application Issues**
 
 **Ollama Connection Error**
 ```bash

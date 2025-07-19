@@ -37,7 +37,7 @@ scrape_configs:
   # Spark Master Monitoring
   - job_name: 'spark-master'
     static_configs:
-      - targets: ['spark-master:8080']
+      - targets: ['spark:8080']
     metrics_path: '/metrics'
     scrape_interval: 30s
 
