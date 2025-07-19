@@ -1,0 +1,160 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Run Main Application",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/app.py",
+            "console": "integratedTerminal",
+            "args": ["input/sample.txt"],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src:${workspaceFolder}",
+                "LOG_LEVEL": "DEBUG"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "Python: Debug Tests",
+            "type": "python",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "tests/",
+                "-v",
+                "--tb=short"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src:${workspaceFolder}"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "Python: Debug Unit Tests",
+            "type": "python",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "tests/unit/",
+                "-v",
+                "--tb=short"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src:${workspaceFolder}"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "Python: Debug Integration Tests",
+            "type": "python",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "tests/integration/",
+                "-v",
+                "--tb=short",
+                "-m", "not external"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src:${workspaceFolder}"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "Python: Debug Performance Tests",
+            "type": "python",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "tests/performance/",
+                "-v",
+                "--tb=short",
+                "-m", "performance"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src:${workspaceFolder}"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "Python: Debug Text Extraction",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/text_processing/text_extractor.py",
+            "console": "integratedTerminal",
+            "args": ["input/sample.pdf"],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src:${workspaceFolder}",
+                "LOG_LEVEL": "DEBUG"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "Python: Debug Text Structuring",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/text_structurer.py",
+            "console": "integratedTerminal",
+            "args": ["--input", "input/sample.txt", "--debug"],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src:${workspaceFolder}",
+                "LOG_LEVEL": "DEBUG"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "Python: Debug Memory Profiling",
+            "type": "python",
+            "request": "launch",
+            "module": "memory_profiler",
+            "args": [
+                "${workspaceFolder}/tests/performance/memory_profile_text_extraction.py"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src:${workspaceFolder}"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "Python: Debug Current File",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}/src:${workspaceFolder}",
+                "LOG_LEVEL": "DEBUG"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "Docker: Debug in Container",
+            "type": "python",
+            "request": "attach",
+            "connect": {
+                "host": "localhost",
+                "port": 5678
+            },
+            "pathMappings": [
+                {
+                    "localRoot": "${workspaceFolder}",
+                    "remoteRoot": "/app"
+                }
+            ]
+        }
+    ]
+}

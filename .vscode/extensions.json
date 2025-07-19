@@ -1,0 +1,74 @@
+{
+  "recommendations": [
+    // Python Development
+    "ms-python.python",
+    "ms-python.black-formatter",
+    "ms-python.isort",
+    "ms-python.mypy-type-checker",
+    "ms-python.flake8",
+    "ms-python.pylint",
+    "charliermarsh.ruff",
+    
+    // Testing and Quality
+    "littlefoxteam.vscode-python-test-adapter",
+    "ms-python.pytest",
+    "hbenl.vscode-test-explorer",
+    "ryanluker.vscode-coverage-gutters",
+    
+    // Git and Version Control
+    "eamodio.gitlens",
+    "mhutchie.git-graph",
+    "github.vscode-pull-request-github",
+    
+    // Docker and Containers
+    "ms-azuretools.vscode-docker",
+    "ms-vscode-remote.remote-containers",
+    "ms-vscode-remote.remote-ssh",
+    
+    // YAML and Configuration
+    "redhat.vscode-yaml",
+    "tamasfe.even-better-toml",
+    "esbenp.prettier-vscode",
+    
+    // Markdown and Documentation
+    "yzhang.markdown-all-in-one",
+    "davidanson.vscode-markdownlint",
+    "shd101wyy.markdown-preview-enhanced",
+    
+    // Data Science and AI
+    "ms-toolsai.jupyter",
+    "ms-python.vscode-pylance",
+    "ms-toolsai.jupyter-keymap",
+    "ms-toolsai.jupyter-renderers",
+    
+    // DevOps and Infrastructure
+    "ms-kubernetes-tools.vscode-kubernetes-tools",
+    "hashicorp.terraform",
+    "redhat.ansible",
+    
+    // Utilities
+    "streetsidesoftware.code-spell-checker",
+    "gruntfuggly.todo-tree",
+    "aaron-bond.better-comments",
+    "alefragnani.bookmarks",
+    "ms-vscode.vscode-json",
+    "bradlc.vscode-tailwindcss",
+    
+    // Performance and Debugging
+    "ms-python.debugpy",
+    "ms-vscode.vscode-github-issue-notebooks",
+    "github.copilot",
+    "github.copilot-chat",
+    
+    // Project Management
+    "formulahendry.auto-rename-tag",
+    "christian-kohler.path-intellisense",
+    "visualstudioexptteam.vscodeintellicode",
+    "ms-vscode.vscode-typescript-next"
+  ],
+  "unwantedRecommendations": [
+    // Conflicting or redundant extensions
+    "ms-python.autopep8",
+    "himanoa.Python-autopep8"
+  ]
+}

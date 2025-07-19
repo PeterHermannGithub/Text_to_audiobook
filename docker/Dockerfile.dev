@@ -1,61 +1,156 @@
-# Text-to-Audiobook Development Dockerfile
-# Optimized for development with debugging tools and hot reload
+# Development Dockerfile for text-to-audiobook project
+# This image includes development tools, debugging capabilities, and hot-reload support
 
-FROM python:3.11-slim
+FROM python:3.11-slim-bullseye
 
-# Set build arguments
-ARG DEBIAN_FRONTEND=noninteractive
-
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    curl \
-    git \
-    vim \
-    htop \
-    net-tools \
-    ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    DEBIAN_FRONTEND=noninteractive
 
 # Set working directory
 WORKDIR /app
 
-# Copy requirements and install Python dependencies
-COPY requirements.txt requirements-dev.txt ./
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir -r requirements-dev.txt
+# Install system dependencies for development
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Build tools
+    build-essential \
+    gcc \
+    g++ \
+    # Version control
+    git \
+    # Text processing dependencies
+    libffi-dev \
+    libssl-dev \
+    # PDF processing
+    libpoppler-cpp-dev \
+    poppler-utils \
+    # Audio processing
+    ffmpeg \
+    # Network tools for debugging
+    curl \
+    wget \
+    netcat \
+    # Development utilities
+    vim \
+    nano \
+    htop \
+    tree \
+    # Process monitoring
+    procps \
+    # Memory profiling tools
+    valgrind \
+    # Cleanup
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-# Download spaCy model
+# Install development Python dependencies first for better caching
+COPY requirements-dev.in /app/
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install pip-tools && \
+    pip-compile requirements-dev.in && \
+    pip install -r requirements-dev.txt
+
+# Install core application dependencies
+COPY requirements.in /app/
+RUN pip-compile requirements.in && \
+    pip install -r requirements.txt
+
+# Install additional development tools
+RUN pip install \
+    # Debugging tools
+    ipdb \
+    pudb \
+    # Code analysis
+    vulture \
+    radon \
+    # Performance profiling
+    py-spy \
+    # Notebook support
+    jupyterlab \
+    # HTTP debugging
+    httpie
+
+# Download spaCy model for NLP processing
 RUN python -m spacy download en_core_web_sm
 
-# Install development tools
-RUN pip install --no-cache-dir \
-    pytest \
-    pytest-cov \
-    pytest-xdist \
-    black \
-    flake8 \
-    mypy \
-    pre-commit \
-    jupyter \
-    ipython
+# Create non-root user for security
+RUN useradd --create-home --shell /bin/bash --uid 1000 devuser && \
+    chown -R devuser:devuser /app
+USER devuser
 
-# Create directories
-RUN mkdir -p input output logs
+# Create directories for project structure
+RUN mkdir -p /app/src \
+             /app/config \
+             /app/input \
+             /app/output \
+             /app/tests \
+             /app/logs \
+             /app/scripts
 
-# Set environment variables for development
-ENV PYTHONPATH=/app
-ENV PYTHONUNBUFFERED=1
-ENV LOG_LEVEL=DEBUG
-ENV DEVELOPMENT=true
+# Copy project files (using .dockerignore to exclude unnecessary files)
+COPY --chown=devuser:devuser . /app/
 
-# Expose ports
-EXPOSE 8000 8888
+# Install project in development mode
+RUN pip install -e .
 
-# Health check
+# Set up Git configuration for development
+RUN git config --global user.name "Development Container" && \
+    git config --global user.email "dev@texttoaudiobook.local" && \
+    git config --global init.defaultBranch main
+
+# Install pre-commit hooks for development
+RUN pre-commit install --install-hooks || true
+
+# Create development scripts
+RUN echo '#!/bin/bash\n\
+echo "Text-to-Audiobook Development Environment"\n\
+echo "========================================"\n\
+echo "Available commands:"\n\
+echo "  python app.py <input_file>     - Run main application"\n\
+echo "  pytest tests/                  - Run test suite"\n\
+echo "  pytest tests/unit/             - Run unit tests only"\n\
+echo "  pytest tests/integration/      - Run integration tests"\n\
+echo "  pytest tests/performance/      - Run performance tests"\n\
+echo "  black src/ tests/              - Format code"\n\
+echo "  flake8 src/ tests/             - Lint code"\n\
+echo "  mypy src/                      - Type checking"\n\
+echo "  bandit -r src/                 - Security scanning"\n\
+echo "  safety check                   - Dependency vulnerability check"\n\
+echo "  pre-commit run --all-files     - Run all pre-commit hooks"\n\
+echo "  jupyter lab --ip=0.0.0.0       - Start Jupyter Lab"\n\
+echo "  memory_profiler <script>       - Profile memory usage"\n\
+echo "  py-spy top -p <pid>            - Live process profiling"\n\
+echo "\nProject structure:"\n\
+tree -L 2 /app\n\
+echo "\nEnvironment status:"\n\
+python --version\n\
+pip list | grep -E "(pytest|black|flake8|mypy|bandit)"\n\
+' > /home/devuser/.bashrc_dev && chmod +x /home/devuser/.bashrc_dev
+
+# Development environment health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD python -c "import sys; print('Python:', sys.version); import src; print('Application module loadable')" || exit 1
 
-# Default command for development
-CMD ["python", "app.py", "--help"]
+# Expose common development ports
+EXPOSE 8000 8080 5000 3000 8888
+
+# Set development environment variables
+ENV PYTHONPATH="/app:/app/src" \
+    LOG_LEVEL="DEBUG" \
+    DEVELOPMENT_MODE="true" \
+    OLLAMA_URL="http://host.docker.internal:11434/api/generate"
+
+# Configure shell for development
+RUN echo 'source ~/.bashrc_dev' >> /home/devuser/.bashrc
+
+# Default command for development container
+CMD ["bash", "-c", "source ~/.bashrc_dev && bash"]
+
+# Development container labels
+LABEL maintainer="text-to-audiobook-dev" \
+      description="Development environment for text-to-audiobook project" \
+      version="dev" \
+      environment="development"
