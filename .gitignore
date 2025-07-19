@@ -1,5 +1,11 @@
-# Claude Code files
-CLAUDE.md
+# Input files (test content, books, documents)
+input/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
 
 # Python
 __pycache__/
@@ -40,7 +46,12 @@ Thumbs.db
 logs/
 output/
 *.log
-*.json
+
+# Output JSON files (but keep config JSON files)
+output/*.json
+temp/*.json
+*_results.json
+*_benchmark*.json
 
 # Archive directory
 archive/
