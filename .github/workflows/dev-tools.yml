@@ -113,10 +113,10 @@ jobs:
         # Test Jupyter can start and basic functionality
         jupyter kernelspec list
         python -c "
-import jupyter_core
-import notebook
-print('✅ Jupyter environment is functional')
-"
+        import jupyter_core
+        import notebook
+        print('✅ Jupyter environment is functional')
+        "
     
     - name: Upload development environment report
       uses: actions/upload-artifact@v3
