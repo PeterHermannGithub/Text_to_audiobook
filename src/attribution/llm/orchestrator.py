@@ -891,3 +891,529 @@ class LLMOrchestrator:
                 "context": context
             }
             self.debug_logger.debug(f"LLM_PROCESSING: {json.dumps(log_entry, indent=2)}")
+    
+    # ===== REASONING-ENHANCED METHODS FOR gpt-oss:20b =====
+    
+    def get_reasoning_speaker_classifications(
+        self, 
+        numbered_lines: List[str], 
+        text_metadata: Optional[TextMetadata] = None, 
+        reasoning_effort: str = "medium",
+        context_hint: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Gets speaker classifications using chain-of-thought reasoning capabilities.
+        
+        Leverages gpt-oss:20b's reasoning abilities to provide transparent, step-by-step
+        speaker attribution with confidence scoring and reasoning extraction.
+        
+        Args:
+            numbered_lines: List of strings, each representing a pre-segmented line
+            text_metadata: Metadata containing character names, format info, and context hints
+            reasoning_effort: Reasoning effort level - "low", "medium", or "high"
+            context_hint: Optional context hint for processing
+            
+        Returns:
+            Dictionary containing:
+            - speakers: List of speaker names
+            - reasoning_steps: Extracted reasoning process
+            - confidence_scores: Confidence level for each attribution
+            - reasoning_quality: Overall reasoning quality score
+        """
+        if not settings.REASONING_ENABLED:
+            # Fallback to standard classification if reasoning is disabled
+            speakers = self.get_speaker_classifications(numbered_lines, text_metadata, context_hint)
+            return {
+                "speakers": speakers,
+                "reasoning_steps": [],
+                "confidence_scores": ["MEDIUM"] * len(speakers),
+                "reasoning_quality": 0.5
+            }
+        
+        max_attempts = 3
+        expected_count = len(numbered_lines)
+        
+        if not numbered_lines or expected_count == 0:
+            self.logger.warning("Empty numbered_lines provided to reasoning LLM")
+            return {
+                "speakers": [],
+                "reasoning_steps": [],
+                "confidence_scores": [],
+                "reasoning_quality": 0.0
+            }
+        
+        # Build reasoning prompt
+        prompt = self.prompt_factory.create_reasoning_classification_prompt(
+            numbered_lines, text_metadata, reasoning_effort
+        )
+        
+        for attempt in range(max_attempts):
+            try:
+                # Get LLM response with reasoning timeout
+                reasoning_timeout = settings.REASONING_EFFORT_TIMEOUTS.get(reasoning_effort, 120)
+                response_text = self._get_llm_response_with_timeout(prompt, reasoning_timeout, text_metadata, context_hint)
+                
+                if not response_text:
+                    continue
+                
+                # Parse reasoning response
+                reasoning_result = self._parse_reasoning_response(response_text, expected_count)
+                
+                if reasoning_result["speakers"] and len(reasoning_result["speakers"]) == expected_count:
+                    # Validate and clean the speakers
+                    cleaned_speakers = self._validate_and_clean_speakers(
+                        reasoning_result["speakers"], text_metadata, numbered_lines
+                    )
+                    
+                    # Log reasoning if transparency is enabled
+                    if settings.REASONING_TRANSPARENCY:
+                        self._log_reasoning_process(reasoning_result, cleaned_speakers, reasoning_effort)
+                    
+                    return {
+                        "speakers": cleaned_speakers,
+                        "reasoning_steps": reasoning_result["reasoning_steps"],
+                        "confidence_scores": reasoning_result["confidence_scores"],
+                        "reasoning_quality": reasoning_result["reasoning_quality"]
+                    }
+                
+            except Exception as e:
+                self.logger.error(f"Error in reasoning classification attempt {attempt + 1}: {e}")
+                continue
+        
+        # All attempts failed - fallback to standard classification
+        self.logger.warning(f"All {max_attempts} reasoning attempts failed, falling back to standard classification")
+        fallback_speakers = self.get_speaker_classifications(numbered_lines, text_metadata, context_hint)
+        
+        return {
+            "speakers": fallback_speakers,
+            "reasoning_steps": ["Fallback to standard classification due to reasoning failures"],
+            "confidence_scores": ["LOW"] * len(fallback_speakers),
+            "reasoning_quality": 0.2
+        }
+
+    def get_agentic_speaker_classifications(
+        self, 
+        numbered_lines: List[str], 
+        text_metadata: Optional[TextMetadata] = None, 
+        max_iterations: int = 3,
+        context_hint: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Gets speaker classifications using agentic workflow with multi-step reasoning.
+        
+        Implements agentic AI capabilities for complex dialogue analysis scenarios
+        that require iterative reasoning and self-reflection.
+        
+        Args:
+            numbered_lines: List of strings, each representing a pre-segmented line
+            text_metadata: Metadata containing character names, format info, and context hints
+            max_iterations: Maximum number of agentic iterations
+            context_hint: Optional context hint for processing
+            
+        Returns:
+            Dictionary containing agentic analysis results with detailed reasoning
+        """
+        if not settings.AGENTIC_ENABLED:
+            # Fallback to reasoning classification if agentic is disabled
+            return self.get_reasoning_speaker_classifications(numbered_lines, text_metadata, "high", context_hint)
+        
+        expected_count = len(numbered_lines)
+        
+        if not numbered_lines or expected_count == 0:
+            self.logger.warning("Empty numbered_lines provided to agentic LLM")
+            return {
+                "speakers": [],
+                "reasoning_steps": [],
+                "confidence_scores": [],
+                "agentic_iterations": 0,
+                "reasoning_quality": 0.0
+            }
+        
+        # Build agentic prompt
+        prompt = self.prompt_factory.create_agentic_speaker_analysis_prompt(
+            numbered_lines, text_metadata, max_iterations
+        )
+        
+        max_attempts = 2  # Fewer attempts for agentic due to higher complexity
+        
+        for attempt in range(max_attempts):
+            try:
+                # Get LLM response with extended timeout for agentic processing
+                agentic_timeout = max(settings.REASONING_EFFORT_TIMEOUTS.get("high", 300), 300)
+                response_text = self._get_llm_response_with_timeout(prompt, agentic_timeout, text_metadata, context_hint)
+                
+                if not response_text:
+                    continue
+                
+                # Parse agentic response
+                agentic_result = self._parse_agentic_response(response_text, expected_count)
+                
+                if agentic_result["speakers"] and len(agentic_result["speakers"]) == expected_count:
+                    # Validate and clean the speakers
+                    cleaned_speakers = self._validate_and_clean_speakers(
+                        agentic_result["speakers"], text_metadata, numbered_lines
+                    )
+                    
+                    # Log agentic process if transparency is enabled
+                    if settings.REASONING_TRANSPARENCY:
+                        self._log_agentic_process(agentic_result, cleaned_speakers)
+                    
+                    return {
+                        "speakers": cleaned_speakers,
+                        "reasoning_steps": agentic_result["reasoning_steps"],
+                        "confidence_scores": agentic_result["confidence_scores"],
+                        "agentic_iterations": agentic_result["agentic_iterations"],
+                        "reasoning_quality": agentic_result["reasoning_quality"]
+                    }
+                
+            except Exception as e:
+                self.logger.error(f"Error in agentic classification attempt {attempt + 1}: {e}")
+                continue
+        
+        # All attempts failed - fallback to reasoning classification
+        self.logger.warning("All agentic attempts failed, falling back to reasoning classification")
+        return self.get_reasoning_speaker_classifications(numbered_lines, text_metadata, "high", context_hint)
+
+    def get_adaptive_speaker_classifications(
+        self, 
+        numbered_lines: List[str], 
+        text_metadata: Optional[TextMetadata] = None, 
+        context_hint: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Gets speaker classifications using complexity-adaptive approach.
+        
+        Automatically selects the most appropriate reasoning strategy based on
+        content complexity analysis and available processing resources.
+        
+        Args:
+            numbered_lines: List of strings, each representing a pre-segmented line
+            text_metadata: Metadata containing character names, format info, and context hints
+            context_hint: Optional context hint for processing
+            
+        Returns:
+            Dictionary containing adaptive analysis results
+        """
+        if not numbered_lines:
+            return {
+                "speakers": [],
+                "reasoning_steps": [],
+                "confidence_scores": [],
+                "selected_strategy": "none",
+                "reasoning_quality": 0.0
+            }
+        
+        # Calculate complexity score
+        complexity_score = self.prompt_factory._calculate_complexity_score(numbered_lines, text_metadata)
+        
+        # Select strategy based on complexity and settings
+        if complexity_score >= 7 and settings.AGENTIC_ENABLED:
+            result = self.get_agentic_speaker_classifications(numbered_lines, text_metadata, 3, context_hint)
+            result["selected_strategy"] = "agentic"
+        elif complexity_score >= 4 and settings.REASONING_ENABLED:
+            effort = "high" if complexity_score >= 6 else "medium"
+            result = self.get_reasoning_speaker_classifications(numbered_lines, text_metadata, effort, context_hint)
+            result["selected_strategy"] = f"reasoning_{effort}"
+        elif complexity_score >= 2 and settings.REASONING_ENABLED:
+            result = self.get_reasoning_speaker_classifications(numbered_lines, text_metadata, "low", context_hint)
+            result["selected_strategy"] = "reasoning_low"
+        else:
+            # Use standard classification for simple cases
+            speakers = self.get_speaker_classifications(numbered_lines, text_metadata, context_hint)
+            result = {
+                "speakers": speakers,
+                "reasoning_steps": ["Used standard classification for simple content"],
+                "confidence_scores": ["HIGH"] * len(speakers),
+                "selected_strategy": "standard",
+                "reasoning_quality": 0.8
+            }
+        
+        # Add complexity metadata
+        result["complexity_score"] = complexity_score
+        
+        return result
+
+    def _get_llm_response_with_timeout(
+        self, 
+        prompt: str, 
+        timeout: int, 
+        text_metadata: Optional[TextMetadata] = None, 
+        context_hint: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Get LLM response with custom timeout for reasoning operations.
+        
+        Args:
+            prompt: The prompt to send to the LLM
+            timeout: Custom timeout in seconds
+            text_metadata: Optional metadata for context
+            context_hint: Optional context hint
+            
+        Returns:
+            LLM response text or None if failed
+        """
+        try:
+            # Temporarily modify timeout for reasoning requests
+            original_timeout = 120  # Default timeout
+            
+            if self.engine == 'local':
+                # For local requests, use the HTTP pool manager with custom timeout
+                if self.http_pool_manager:
+                    payload = {
+                        "model": self.local_model,
+                        "prompt": prompt,
+                        "stream": False,
+                        "options": {
+                            "temperature": 0.1,
+                            "top_p": 0.9,
+                            "num_predict": 4096  # Increase for reasoning responses
+                        }
+                    }
+                    
+                    response = self.http_pool_manager.post(
+                        self.ollama_url, 
+                        json_data=payload, 
+                        timeout=timeout,
+                        request_complexity='heavy'  # Mark as heavy for reasoning
+                    )
+                    
+                    result = response.json()
+                    
+                    if 'response' in result:
+                        return result['response'].strip()
+                    else:
+                        raise ValueError("No 'response' field in Ollama response")
+                
+            # Fallback to standard method with cache checking
+            return self._get_llm_response(prompt, text_metadata, context_hint)
+                
+        except Exception as e:
+            self.logger.error(f"Error in timeout LLM request: {e}")
+            return None
+
+    def _parse_reasoning_response(self, response_text: str, expected_count: int) -> Dict[str, Any]:
+        """
+        Parse chain-of-thought reasoning response to extract speakers and reasoning steps.
+        
+        Args:
+            response_text: Raw LLM response with reasoning
+            expected_count: Expected number of speakers
+            
+        Returns:
+            Dictionary with parsed reasoning components
+        """
+        result = {
+            "speakers": [],
+            "reasoning_steps": [],
+            "confidence_scores": [],
+            "reasoning_quality": 0.0
+        }
+        
+        try:
+            # Extract final answer
+            final_answer_match = re.search(r'FINAL ANSWER:\s*(\[.*?\])', response_text, re.DOTALL | re.IGNORECASE)
+            if final_answer_match:
+                speakers_json = final_answer_match.group(1)
+                speakers = json.loads(speakers_json)
+                
+                if isinstance(speakers, list) and len(speakers) == expected_count:
+                    result["speakers"] = speakers
+                
+            # Extract reasoning steps
+            reasoning_steps = self._extract_reasoning_steps(response_text)
+            result["reasoning_steps"] = reasoning_steps
+            
+            # Extract confidence indicators (if present)
+            confidence_scores = self._extract_confidence_scores(response_text, expected_count)
+            result["confidence_scores"] = confidence_scores
+            
+            # Calculate reasoning quality
+            result["reasoning_quality"] = self._calculate_reasoning_quality(response_text, reasoning_steps)
+            
+        except Exception as e:
+            self.logger.error(f"Error parsing reasoning response: {e}")
+        
+        return result
+
+    def _parse_agentic_response(self, response_text: str, expected_count: int) -> Dict[str, Any]:
+        """
+        Parse agentic workflow response to extract analysis results.
+        
+        Args:
+            response_text: Raw LLM response with agentic analysis
+            expected_count: Expected number of speakers
+            
+        Returns:
+            Dictionary with parsed agentic components
+        """
+        result = {
+            "speakers": [],
+            "reasoning_steps": [],
+            "confidence_scores": [],
+            "agentic_iterations": 0,
+            "reasoning_quality": 0.0
+        }
+        
+        try:
+            # Extract final attribution
+            final_match = re.search(r'FINAL ATTRIBUTION:\s*(\[.*?\])', response_text, re.DOTALL | re.IGNORECASE)
+            if final_match:
+                speakers_json = final_match.group(1)
+                speakers = json.loads(speakers_json)
+                
+                if isinstance(speakers, list) and len(speakers) == expected_count:
+                    result["speakers"] = speakers
+            
+            # Extract confidence summary
+            confidence_match = re.search(r'CONFIDENCE SUMMARY:\s*(.*?)(?=FINAL ATTRIBUTION|$)', response_text, re.DOTALL | re.IGNORECASE)
+            if confidence_match:
+                confidence_text = confidence_match.group(1).strip()
+                confidence_scores = self._parse_confidence_summary(confidence_text, expected_count)
+                result["confidence_scores"] = confidence_scores
+            
+            # Extract agentic steps
+            agentic_steps = self._extract_agentic_steps(response_text)
+            result["reasoning_steps"] = agentic_steps
+            
+            # Count iterations
+            step_matches = re.findall(r'STEP \d+', response_text, re.IGNORECASE)
+            result["agentic_iterations"] = len(step_matches)
+            
+            # Calculate reasoning quality
+            result["reasoning_quality"] = self._calculate_reasoning_quality(response_text, agentic_steps)
+            
+        except Exception as e:
+            self.logger.error(f"Error parsing agentic response: {e}")
+        
+        return result
+
+    def _extract_reasoning_steps(self, response_text: str) -> List[str]:
+        """Extract reasoning steps from chain-of-thought response."""
+        steps = []
+        
+        # Look for numbered analysis steps
+        step_pattern = r'(\d+\.\s+[^:]+:.*?)(?=\d+\.\s+|FINAL ANSWER|$)'
+        step_matches = re.findall(step_pattern, response_text, re.DOTALL)
+        
+        for match in step_matches:
+            clean_step = re.sub(r'\s+', ' ', match.strip())
+            if len(clean_step) > 10:  # Filter out very short steps
+                steps.append(clean_step)
+        
+        # If no numbered steps found, look for analysis paragraphs
+        if not steps:
+            paragraphs = response_text.split('\n\n')
+            for para in paragraphs:
+                if len(para.strip()) > 50 and 'FINAL ANSWER' not in para:
+                    clean_para = re.sub(r'\s+', ' ', para.strip())
+                    steps.append(clean_para)
+        
+        return steps[:5]  # Limit to 5 steps to prevent bloat
+
+    def _extract_agentic_steps(self, response_text: str) -> List[str]:
+        """Extract agentic workflow steps from response."""
+        steps = []
+        
+        # Look for STEP sections
+        step_pattern = r'STEP \d+[^:]*:(.*?)(?=STEP \d+|CONFIDENCE SUMMARY|FINAL ATTRIBUTION|$)'
+        step_matches = re.findall(step_pattern, response_text, re.DOTALL | re.IGNORECASE)
+        
+        for match in step_matches:
+            clean_step = re.sub(r'\s+', ' ', match.strip())
+            if len(clean_step) > 10:
+                steps.append(clean_step)
+        
+        return steps
+
+    def _extract_confidence_scores(self, response_text: str, expected_count: int) -> List[str]:
+        """Extract confidence scores from reasoning response."""
+        confidence_scores = []
+        
+        # Look for explicit confidence indicators
+        confidence_patterns = [
+            r'confidence[:\s]+(high|medium|low)',
+            r'(high|medium|low)\s+confidence',
+            r'certainty[:\s]+(high|medium|low)'
+        ]
+        
+        for pattern in confidence_patterns:
+            matches = re.findall(pattern, response_text, re.IGNORECASE)
+            for match in matches:
+                confidence_scores.append(match.upper())
+        
+        # Pad with MEDIUM if not enough scores found
+        while len(confidence_scores) < expected_count:
+            confidence_scores.append("MEDIUM")
+        
+        return confidence_scores[:expected_count]
+
+    def _parse_confidence_summary(self, confidence_text: str, expected_count: int) -> List[str]:
+        """Parse confidence summary from agentic response."""
+        confidence_scores = ["HIGH"] * expected_count  # Default to high confidence
+        
+        # Look for low confidence indicators
+        low_confidence_patterns = [
+            r'line\s+(\d+)[:\s]+low',
+            r'(\d+)[:\s]+low\s+confidence',
+            r'uncertain.*line\s+(\d+)'
+        ]
+        
+        for pattern in low_confidence_patterns:
+            matches = re.findall(pattern, confidence_text, re.IGNORECASE)
+            for match in matches:
+                try:
+                    line_num = int(match) - 1  # Convert to 0-based index
+                    if 0 <= line_num < expected_count:
+                        confidence_scores[line_num] = "LOW"
+                except ValueError:
+                    continue
+        
+        return confidence_scores
+
+    def _calculate_reasoning_quality(self, response_text: str, reasoning_steps: List[str]) -> float:
+        """Calculate overall reasoning quality score."""
+        quality_score = 0.0
+        
+        # Base score from number of reasoning steps
+        if reasoning_steps:
+            quality_score += min(len(reasoning_steps) * 0.15, 0.6)
+        
+        # Bonus for detailed analysis
+        if len(response_text) > 500:
+            quality_score += 0.2
+        
+        # Bonus for confidence indicators
+        if re.search(r'confidence|certainty|sure|likely', response_text, re.IGNORECASE):
+            quality_score += 0.1
+        
+        # Bonus for structured thinking
+        if re.search(r'step|analysis|reasoning|consider', response_text, re.IGNORECASE):
+            quality_score += 0.1
+        
+        return min(quality_score, 1.0)
+
+    def _log_reasoning_process(self, reasoning_result: Dict[str, Any], speakers: List[str], effort: str) -> None:
+        """Log reasoning process for transparency."""
+        if settings.REASONING_TRANSPARENCY and self.debug_logger:
+            log_entry = {
+                "type": "reasoning_process",
+                "effort_level": effort,
+                "speakers": speakers,
+                "reasoning_steps": reasoning_result["reasoning_steps"],
+                "confidence_scores": reasoning_result["confidence_scores"],
+                "quality_score": reasoning_result["reasoning_quality"]
+            }
+            self.debug_logger.info(f"REASONING_TRANSPARENCY: {json.dumps(log_entry, indent=2)}")
+
+    def _log_agentic_process(self, agentic_result: Dict[str, Any], speakers: List[str]) -> None:
+        """Log agentic process for transparency."""
+        if settings.REASONING_TRANSPARENCY and self.debug_logger:
+            log_entry = {
+                "type": "agentic_process",
+                "speakers": speakers,
+                "iterations": agentic_result["agentic_iterations"],
+                "reasoning_steps": agentic_result["reasoning_steps"],
+                "confidence_scores": agentic_result["confidence_scores"],
+                "quality_score": agentic_result["reasoning_quality"]
+            }
+            self.debug_logger.info(f"AGENTIC_TRANSPARENCY: {json.dumps(log_entry, indent=2)}")

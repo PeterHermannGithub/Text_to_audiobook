@@ -5,7 +5,7 @@ import os
 # Use environment variable for Docker compatibility, fallback to localhost
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "localhost")
 OLLAMA_URL = f"http://{OLLAMA_HOST}:11434/api/generate"
-DEFAULT_LOCAL_MODEL = "deepseek-v2:16b"
+DEFAULT_LOCAL_MODEL = "gpt-oss:20b"
 GCP_LLM_MODEL = "gemini-1.0-pro"
 DEFAULT_LLM_ENGINE = "local"
 GCP_LOCATION = "us-central1"
@@ -17,6 +17,22 @@ MULTI_MODEL_FALLBACK_ENABLED = True  # Enable fallback between models on failure
 # Model Capability Definitions - Used for intelligent routing decisions
 MODEL_CAPABILITIES = {
     # Local Models (Ollama)
+    "gpt-oss:20b": {
+        "engine": "local",
+        "provider": "ollama",
+        "speed_tier": "fast",        # fast, medium, slow
+        "quality_tier": "highest",   # high, medium, basic
+        "cost_tier": "free",         # free, low, medium, high
+        "max_context_length": 32768,
+        "supports_json": True,
+        "supports_reasoning": True,  # Chain-of-thought reasoning capability
+        "supports_agentic": True,    # Agentic workflows and tool use
+        "reasoning_effort_levels": ["low", "medium", "high"],
+        "optimal_use_cases": ["complex_reasoning", "speaker_attribution", "dialogue_analysis", "chain_of_thought", "agentic_tasks"],
+        "cost_per_1k_tokens": 0.0,   # Free for local models
+        "avg_response_time_ms": 1800,  # Slightly slower due to reasoning capabilities
+        "reliability_score": 0.97
+    },
     "deepseek-v2:16b": {
         "engine": "local",
         "provider": "ollama",
@@ -89,7 +105,7 @@ MODEL_CAPABILITIES = {
 MULTI_MODEL_POOLS = {
     # Primary pool for high-quality reasoning tasks
     "primary": {
-        "models": ["deepseek-v2:16b", "gemini-1.0-pro"],
+        "models": ["gpt-oss:20b", "deepseek-v2:16b", "gemini-1.0-pro"],
         "routing_strategy": "quality_first",     # quality_first, speed_first, cost_first, balanced
         "failover_enabled": True,
         "max_instances_per_model": 3,
@@ -320,3 +336,41 @@ HTTP_POOL_METRICS_ENABLED = True  # Enable HTTP pool metrics collection
 HTTP_POOL_METRICS_RETENTION_SECONDS = 3600  # Metrics retention time (1 hour)
 HTTP_POOL_STATS_LOGGING_ENABLED = True  # Enable periodic pool stats logging
 HTTP_POOL_STATS_LOGGING_INTERVAL = 300  # Stats logging interval (5 minutes)
+
+# Reasoning Model Configuration (gpt-oss:20b specific)
+REASONING_ENABLED = True  # Enable chain-of-thought reasoning capabilities
+REASONING_DEFAULT_EFFORT = "medium"  # Default reasoning effort level: low, medium, high
+REASONING_MODE = "accuracy_first"  # Reasoning mode: speed_first, accuracy_first, balanced
+REASONING_TRANSPARENCY = True  # Enable reasoning step extraction and logging
+REASONING_VALIDATION = True  # Enable reasoning quality validation
+REASONING_CACHE_ENABLED = True  # Enable reasoning step caching for similar patterns
+
+# Chain-of-Thought Configuration
+COT_ENABLED = True  # Enable chain-of-thought prompting
+COT_TRIGGER_PHRASES = [
+    "Let's think step by step",
+    "Let me reason through this carefully",
+    "I'll analyze this systematically"
+]
+COT_MIN_COMPLEXITY_THRESHOLD = 3  # Minimum complexity score to trigger CoT (1-10 scale)
+COT_MAX_REASONING_STEPS = 5  # Maximum number of reasoning steps to extract
+
+# Agentic AI Configuration
+AGENTIC_ENABLED = True  # Enable agentic workflows and multi-step reasoning
+AGENTIC_MAX_ITERATIONS = 3  # Maximum iterations for agentic problem solving
+AGENTIC_CONFIDENCE_THRESHOLD = 0.8  # Confidence threshold for agentic decisions
+AGENTIC_FALLBACK_TO_SIMPLE = True  # Fallback to simple prompts if agentic fails
+
+# Reasoning Performance Configuration
+REASONING_EFFORT_TIMEOUTS = {
+    "low": 60,     # 1 minute for low effort reasoning
+    "medium": 120,  # 2 minutes for medium effort reasoning
+    "high": 300    # 5 minutes for high effort reasoning
+}
+REASONING_QUALITY_METRICS = True  # Enable reasoning quality tracking
+REASONING_PERFORMANCE_LOGGING = True  # Log reasoning performance metrics
+
+# Harmony Format Configuration (gpt-oss specific)
+HARMONY_FORMAT_ENABLED = True  # Enable harmony response format for gpt-oss models
+HARMONY_FORMAT_VALIDATION = True  # Validate harmony format responses
+HARMONY_FORMAT_FALLBACK = True  # Fallback to standard format if harmony fails

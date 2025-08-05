@@ -599,3 +599,334 @@ CRITICAL: Return exactly {batch_count} sub-arrays with sizes {batch_sizes} respe
 
 Return exactly {batch_count} arrays with sizes {batch_sizes}.
 Format: [["speaker1", "speaker2"], ["speaker3", "speaker4"]]"""
+    
+    # ===== REASONING-ENHANCED METHODS FOR gpt-oss:20b =====
+    
+    def create_reasoning_classification_prompt(self, numbered_lines, text_metadata=None, reasoning_effort="medium"):
+        """
+        Creates a chain-of-thought reasoning prompt for complex speaker attribution scenarios.
+        
+        Leverages gpt-oss:20b's reasoning capabilities to provide step-by-step analysis
+        for challenging dialogue attribution cases.
+        
+        Args:
+            numbered_lines: List of strings, each representing a pre-segmented line
+            text_metadata: Metadata containing character names, format info, and context hints
+            reasoning_effort: Reasoning effort level - "low", "medium", or "high"
+            
+        Returns:
+            String prompt with chain-of-thought reasoning instructions
+        """
+        if not numbered_lines:
+            return ""
+        
+        # Import settings for reasoning configuration
+        from config import settings
+        
+        # Extract POV and character information
+        pov_analysis = text_metadata.get('pov_analysis', {}) if text_metadata else {}
+        pov_type = pov_analysis.get('type', 'UNKNOWN')
+        narrator_id = pov_analysis.get('narrator_identifier', 'narrator')
+        character_profiles = text_metadata.get('character_profiles', []) if text_metadata else []
+        
+        # Build reasoning trigger based on effort level
+        reasoning_triggers = {
+            "low": "Let's think step by step about who is speaking in each line.",
+            "medium": "Let me reason through this carefully, analyzing each line for speaker clues.",
+            "high": "I'll analyze this systematically, considering dialogue patterns, context, and character behavior."
+        }
+        
+        reasoning_trigger = reasoning_triggers.get(reasoning_effort, reasoning_triggers["medium"])
+        
+        # Build dynamic POV rules with reasoning context
+        pov_rules = self._build_dynamic_pov_rules(pov_type, narrator_id)
+        character_list = self._build_character_list_for_pov(character_profiles, pov_type, narrator_id)
+        
+        # Build context block
+        context_hint = text_metadata.get('context_hint', {}) if text_metadata else {}
+        context_block = ""
+        if context_hint:
+            rolling_context = self._build_rolling_context_section(context_hint)
+            if rolling_context:
+                context_block = f"\n\n---CONTEXT BLOCK (Previous text for context)---\n{rolling_context.strip()}"
+        
+        # Build task block
+        task_block = ""
+        for i, line in enumerate(numbered_lines, 1):
+            task_block += f"{i}. {line}\n"
+        
+        task_count = len(numbered_lines)
+        
+        # Create reasoning complexity assessment
+        complexity_indicators = self._assess_dialogue_complexity(numbered_lines, character_profiles)
+        
+        return f"""REASONING TASK: {reasoning_trigger}
+
+NARRATIVE STYLE: {pov_rules}
+
+CHARACTERS:
+{character_list}{context_block}
+
+---LINES TO ANALYZE---
+{task_block.strip()}
+
+REASONING INSTRUCTIONS:
+{self._build_reasoning_instructions(reasoning_effort, complexity_indicators)}
+
+ANALYSIS STEPS:
+1. First, examine each line for dialogue markers (quotes, speech patterns)
+2. Identify contextual clues (who was speaking before, conversation flow)
+3. Consider character-specific speech patterns and behavior
+4. Apply POV rules to distinguish between narrative and dialogue
+5. For ambiguous cases, reason through the most likely speaker based on context
+
+Think through your reasoning step by step, then provide your final answer as a JSON array with exactly {task_count} speaker names.
+
+FORMAT: First show your reasoning, then end with:
+FINAL ANSWER: ["speaker1", "speaker2", "speaker3"]"""
+
+    def create_agentic_speaker_analysis_prompt(self, numbered_lines, text_metadata=None, max_iterations=3):
+        """
+        Creates an agentic workflow prompt for complex multi-step speaker attribution.
+        
+        This implements agentic reasoning where the model can iterate through
+        multiple analysis steps for particularly challenging attribution scenarios.
+        
+        Args:
+            numbered_lines: List of strings, each representing a pre-segmented line
+            text_metadata: Metadata containing character names, format info, and context hints
+            max_iterations: Maximum number of reasoning iterations allowed
+            
+        Returns:
+            String prompt with agentic workflow instructions
+        """
+        if not numbered_lines:
+            return ""
+        
+        # Extract context and character information
+        pov_analysis = text_metadata.get('pov_analysis', {}) if text_metadata else {}
+        character_profiles = text_metadata.get('character_profiles', []) if text_metadata else []
+        
+        # Build character analysis for agentic reasoning
+        character_analysis = self._build_agentic_character_analysis(character_profiles)
+        
+        # Build task block
+        task_block = ""
+        for i, line in enumerate(numbered_lines, 1):
+            task_block += f"{i}. {line}\n"
+        
+        task_count = len(numbered_lines)
+        
+        return f"""AGENTIC SPEAKER ATTRIBUTION TASK:
+
+You are an AI agent specializing in dialogue analysis. Your task is to perform systematic speaker attribution through multiple reasoning steps.
+
+CHARACTER PROFILES:
+{character_analysis}
+
+TEXT TO ANALYZE:
+{task_block.strip()}
+
+AGENTIC WORKFLOW:
+Follow these steps systematically (maximum {max_iterations} iterations):
+
+STEP 1 - INITIAL ASSESSMENT:
+- Scan all lines for obvious dialogue markers
+- Identify clear speaker patterns
+- Note any ambiguous or challenging cases
+
+STEP 2 - CONTEXTUAL ANALYSIS:
+- Analyze conversation flow and turn-taking patterns
+- Consider character relationships and typical interactions
+- Apply narrative perspective rules
+
+STEP 3 - CONFIDENCE VALIDATION:
+- Review your initial attributions
+- Identify low-confidence assignments
+- Apply additional reasoning for uncertain cases
+
+STEP 4 - FINAL VERIFICATION:
+- Ensure all {task_count} lines have speaker assignments
+- Verify consistency with established character patterns
+- Confirm alignment with narrative style
+
+OUTPUT REQUIREMENTS:
+1. Show your reasoning for each step
+2. Indicate confidence level for each attribution (HIGH/MEDIUM/LOW)
+3. Provide final JSON array with exactly {task_count} speaker names
+
+End your response with:
+CONFIDENCE SUMMARY: [List any LOW confidence attributions and reasoning]
+FINAL ATTRIBUTION: ["speaker1", "speaker2", "speaker3"]"""
+
+    def create_complexity_adaptive_prompt(self, numbered_lines, text_metadata=None):
+        """
+        Creates a complexity-adaptive prompt that adjusts reasoning approach based on content analysis.
+        
+        Automatically selects the appropriate reasoning strategy based on dialogue complexity,
+        character count, and ambiguity level.
+        
+        Args:
+            numbered_lines: List of strings, each representing a pre-segmented line
+            text_metadata: Metadata containing character names, format info, and context hints
+            
+        Returns:
+            String prompt optimized for the detected complexity level
+        """
+        if not numbered_lines:
+            return ""
+        
+        # Assess complexity automatically
+        complexity_score = self._calculate_complexity_score(numbered_lines, text_metadata)
+        
+        if complexity_score >= 7:  # High complexity - use agentic approach
+            return self.create_agentic_speaker_analysis_prompt(numbered_lines, text_metadata)
+        elif complexity_score >= 4:  # Medium complexity - use reasoning approach
+            return self.create_reasoning_classification_prompt(numbered_lines, text_metadata, "high")
+        elif complexity_score >= 2:  # Low complexity - use simple reasoning
+            return self.create_reasoning_classification_prompt(numbered_lines, text_metadata, "low")
+        else:  # Very simple - use standard approach
+            return self.create_speaker_classification_prompt(numbered_lines, text_metadata)
+
+    def _assess_dialogue_complexity(self, lines, character_profiles):
+        """
+        Assess the complexity of dialogue attribution for a set of lines.
+        
+        Args:
+            lines: List of text lines to analyze
+            character_profiles: List of character profile dictionaries
+            
+        Returns:
+            Dictionary with complexity indicators
+        """
+        indicators = {
+            "has_quotes": any('"' in line or "'" in line for line in lines),
+            "multiple_speakers_likely": len(character_profiles) > 2,
+            "has_narrative_mix": any(not ('"' in line or "'" in line) for line in lines),
+            "has_ambiguous_markers": any("said" in line.lower() or "asked" in line.lower() for line in lines),
+            "line_count": len(lines)
+        }
+        
+        return indicators
+
+    def _build_reasoning_instructions(self, effort_level, complexity_indicators):
+        """
+        Build reasoning instructions based on effort level and complexity.
+        
+        Args:
+            effort_level: "low", "medium", or "high"
+            complexity_indicators: Dictionary with complexity assessment
+            
+        Returns:
+            String with specific reasoning instructions
+        """
+        base_instructions = [
+            "Look for quotation marks to identify direct speech",
+            "Consider who was speaking in previous context",
+            "Use character names when clearly identified"
+        ]
+        
+        if effort_level == "medium" or effort_level == "high":
+            base_instructions.extend([
+                "Analyze speech patterns and character voice consistency",
+                "Consider relationship dynamics between characters",
+                "Look for implicit dialogue cues (actions, reactions)"
+            ])
+        
+        if effort_level == "high":
+            base_instructions.extend([
+                "Examine narrative perspective shifts",
+                "Consider character emotional states and motivations",
+                "Analyze conversation subtext and implied meanings"
+            ])
+        
+        # Add complexity-specific instructions
+        if complexity_indicators.get("has_narrative_mix"):
+            base_instructions.append("Carefully distinguish between narrative description and character speech")
+        
+        if complexity_indicators.get("multiple_speakers_likely"):
+            base_instructions.append("Track conversation turns between multiple characters")
+        
+        return "\n".join(f"• {instruction}" for instruction in base_instructions)
+
+    def _build_agentic_character_analysis(self, character_profiles):
+        """
+        Build detailed character analysis for agentic reasoning.
+        
+        Args:
+            character_profiles: List of character profile dictionaries
+            
+        Returns:
+            String with detailed character analysis
+        """
+        if not character_profiles:
+            return "No specific character profiles available. Use context clues to identify speakers."
+        
+        analysis_lines = []
+        for profile in character_profiles[:8]:  # Limit to prevent prompt bloat
+            name = profile['name']
+            analysis = f"• {name}"
+            
+            # Add speech patterns if available
+            if profile.get('speech_patterns'):
+                analysis += f" - Speech: {', '.join(profile['speech_patterns'][:3])}"
+            
+            # Add relationship info
+            if profile.get('relationships'):
+                relationships = [f"{rel['name']} ({rel['type']})" for rel in profile['relationships'][:2]]
+                analysis += f" - Relationships: {', '.join(relationships)}"
+            
+            # Add personality traits
+            if profile.get('traits'):
+                analysis += f" - Traits: {', '.join(profile['traits'][:3])}"
+            
+            analysis_lines.append(analysis)
+        
+        return "\n".join(analysis_lines)
+
+    def _calculate_complexity_score(self, lines, text_metadata):
+        """
+        Calculate complexity score for adaptive prompt selection.
+        
+        Args:
+            lines: List of text lines to analyze
+            text_metadata: Metadata containing character and context information
+            
+        Returns:
+            Integer complexity score (0-10)
+        """
+        score = 0
+        
+        # Line count factor
+        if len(lines) > 10:
+            score += 2
+        elif len(lines) > 5:
+            score += 1
+        
+        # Character count factor
+        character_profiles = text_metadata.get('character_profiles', []) if text_metadata else []
+        if len(character_profiles) > 5:
+            score += 3
+        elif len(character_profiles) > 2:
+            score += 2
+        elif len(character_profiles) > 0:
+            score += 1
+        
+        # Dialogue complexity factors
+        has_quotes = any('"' in line or "'" in line for line in lines)
+        has_narrative = any(not ('"' in line or "'" in line) for line in lines)
+        
+        if has_quotes and has_narrative:
+            score += 2  # Mixed content is more complex
+        
+        # Ambiguity markers
+        ambiguous_markers = ["said", "asked", "whispered", "shouted", "replied"]
+        if any(marker in " ".join(lines).lower() for marker in ambiguous_markers):
+            score += 1
+        
+        # Context complexity
+        context_hint = text_metadata.get('context_hint', {}) if text_metadata else {}
+        if context_hint.get('conversation_flow'):
+            score += 1
+        
+        return min(score, 10)  # Cap at 10
